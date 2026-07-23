@@ -1,5 +1,13 @@
+llama-index-core>=0.10.0    #RAG framework
+qdrant-client>=1.7.0    # Vector DB with metadata filtering capability
+sec-edgar-downloader>=5.0.0    # SEC 10-K downloader
+unstructured[html]>=0.12.0    # HTML parsing
+
 llama-index-llms-groq>=0.1.0    # For router and synthesizer agents. Fİnancial synthesis,numerical reasoning and JSON filter parsing.
 llama-index-embeddings-huggingface>=0.1.0   # Embedding model BAAI
+
 fastapi>=0.110.0
 streamlit>=1.32.0
+arize-phoenix>=4.0.0    
+
 python-dotenv>=1.0.0
