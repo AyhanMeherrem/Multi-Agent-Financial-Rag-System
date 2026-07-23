@@ -5,6 +5,7 @@ import re
 from typing import List, Dict, Any
 
 #preloading sentence tokenization modles
+# pyrefly: ignore [missing-import]
 import nltk
 nltk.download('punkt_tab', quiet=True)
 nltk.download('averaged_perceptron_tagger_eng', quiet=True)
