@@ -3,3 +3,9 @@ myNotes.md
 .env
 *.log
 .git
+sec_edgar_filings/
+data/
+__pycache__/
+*.pyc
+.venv
+venv/

@@ -4,7 +4,7 @@ from sec_edgar_downloader import Downloader
 
 downloader = Downloader(
     company_name="MultiAgentFinancialRAG",
-    email_address="[EMAIL_ADDRESS]",
+    email_address="admin@financialrag.com",
     download_folder="./data/raw_filings"
 )
 
