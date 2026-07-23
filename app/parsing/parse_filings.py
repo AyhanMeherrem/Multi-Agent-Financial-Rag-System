@@ -44,6 +44,8 @@ def parse_single_filing(html_path: str, company: str, year: str) -> List[TextNod
         nodes.append(node)
     return nodes
 
+
+# Returing all filings inside DB
 def parse_all_filings(base_dir: str = "./data/raw_filings/sec-edgar-filings") -> List[TextNode]:
     all_nodes: List[TextNode] = []
     for root, _, files in os.walk(base_dir):
