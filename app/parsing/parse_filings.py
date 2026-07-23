@@ -1,6 +1,10 @@
+# We needed to have filter for raw html and split it into Element trees which unstructured 
+
 import os
 import re
 from typing import List, Dict, Any
+
+#preloading sentence tokenization modles
 import nltk
 nltk.download('punkt_tab', quiet=True)
 nltk.download('averaged_perceptron_tagger_eng', quiet=True)
@@ -16,15 +20,19 @@ SECTION_PATTERNS = {
     "Item 8": re.compile(r"item\s+8[\.\s:\–\-]+financial\s+statements", re.IGNORECASE),
 }
 
+# For State machine
 
 def parse_single_filing(html_path: str, company: str, year: str) -> List[TextNode]:
-    print(f"Partitioning HTML DOM tree for {company} ({year}): {html_path}")
-    elements = partition_html(filename=html_path, include_page_breaks=False)
+    print(f"Partitioning HTML dom tree for {company} ({year}): {html_path}")
+    elements = partition_html(filename=html_path, include_page_breaks=False)    # ALl html
     nodes: List[TextNode] = []
-    current_section = "General"
+    current_section = "General" # To track which chapter are we in while iterating over 
 
     for element in elements:
         text = str(element).strip()
+        # Skip for short texts ( maybe change len threshold to idk, regards for split) 
+        
+        # LOOPING over same patterns
         if not text or len(text) < 20:
             continue
         for sec_name, pattern in SECTION_PATTERNS.items():
@@ -34,7 +42,6 @@ def parse_single_filing(html_path: str, company: str, year: str) -> List[TextNod
         node = TextNode(text=text, metadata={"company": company, "year": year, "section": current_section})
         nodes.append(node)
     return nodes
-
 
 def parse_all_filings(base_dir: str = "./data/raw_filings/sec-edgar-filings") -> List[TextNode]:
     all_nodes: List[TextNode] = []
@@ -49,6 +56,8 @@ def parse_all_filings(base_dir: str = "./data/raw_filings/sec-edgar-filings") ->
                 all_nodes.extend(filing_nodes)
     return all_nodes
 
+# Final 3390 Node created (combined from 4 fillings => AAPL(2), MSFT(2)),
+#
 
 if __name__ == "__main__":
     parsed_nodes = parse_all_filings()
