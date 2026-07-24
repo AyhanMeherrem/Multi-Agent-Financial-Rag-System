@@ -13,3 +13,6 @@ sample_point = points[0]
 
 print(f"Point ID: {sample_point.id}")
 print(f"Metadata Payload: {sample_point.payload}")
+
+client.close()
+
