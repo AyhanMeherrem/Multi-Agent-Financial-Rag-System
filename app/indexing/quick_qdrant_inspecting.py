@@ -16,3 +16,8 @@ print(f"Metadata Payload: {sample_point.payload}")
 
 client.close()
 
+# Expected output:
+# Total Stored Vectors: 2146
+# Vector Dimension: 1024
+# Point ID: <uuid>
+# Metadata Payload: {'company': 'AAPL', 'year': '2024', 'section': 'Item 8', '_node_content': '{"id_": "<uuid>", ...}'}
