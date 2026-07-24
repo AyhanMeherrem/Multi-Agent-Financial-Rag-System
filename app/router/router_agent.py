@@ -51,9 +51,18 @@ def route_query_with_llm(query_string: str, index: VectorStoreIndex):
         JSON Output:"""
 
     response = llm.complete(prompt)
-    clean_json = response.text.strip().replace("```json", "").replace("```", "").strip()
+    response_text = response.text.strip().replace("```json", "").replace("```", "").strip()
     
-    filter_dict = json.loads(clean_json)
+    import re
+    match = re.search(r'\{.*\}', response_text, re.DOTALL)
+    if match:
+        try:
+            filter_dict = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            filter_dict = {}
+    else:
+        filter_dict = {}
+
 
     retriever = get_sec_retriever(index, 
     company=filter_dict.get("company"), 
