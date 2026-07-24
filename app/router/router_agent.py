@@ -6,7 +6,6 @@ from llama_index.llms.groq import Groq
 from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
 from llama_index.core.retrievers import VectorIndexRetriever
 from llama_index.core import VectorStoreIndex
-from vector_store import storage_context
 import json # For parsing filtering metadata from user query  text
 
 
@@ -21,7 +20,7 @@ def get_router_llm() -> Groq:
         raise ValueError(
             "GROQ_API_KEY is missing or unconfigured in .env file!"
         )
-    return Groq(model="llama-3.1-8b", api_key=api_key)
+    return Groq(model="llama-3.1-8b-instant", api_key=api_key)
 
 def construct_sec_filters(company:str=None, year:str=None, section:str=None) -> MetadataFilters:
     filters = []
@@ -64,3 +63,28 @@ def route_query_with_llm(query_string: str, index: VectorStoreIndex):
 
     nodes = retriever.retrieve(query_string)
     return nodes, filter_dict
+
+
+""""""""""""""""""""""""""""""""""""""""HELPER TEST FUNCTION """""""""""""""""
+
+from qdrant_client import QdrantClient
+from llama_index.vector_stores.qdrant import QdrantVectorStore
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+
+def load_index_from_qdrant() -> VectorStoreIndex:
+    client = QdrantClient(path="./data/qdrant_db")
+    vector_store = QdrantVectorStore(client=client, collection_name="financial_filings")
+    embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-large-en-v1.5")
+    return VectorStoreIndex.from_vector_store(vector_store=vector_store, embed_model=embed_model)
+
+if __name__ == "__main__":
+    index = load_index_from_qdrant()
+    sample_query = "What were Apple's primary risk factors in 2024?"
+    nodes, filters = route_query_with_llm(sample_query, index)
+    
+    print("\n--- Router Agent Execution Results ---")
+    print(f"Extracted Metadata Filters: {filters}")
+    print(f"Total Filtered Nodes Retrieved: {len(nodes)}")
+    if nodes:
+        print(f"Top Retrieved Node Snippet: {nodes[0].node.text[:200]}...")
+
