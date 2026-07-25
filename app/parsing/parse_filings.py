@@ -16,10 +16,19 @@ from unstructured.partition.html import partition_html
 from llama_index.core.schema import TextNode    # For capsulating chunks (which will conver to embedding)
 
 SECTION_PATTERNS = {
+    "Item 1": re.compile(r"item\s+1[\.\s:\–\-]+business", re.IGNORECASE),
     "Item 1A": re.compile(r"item\s+1a[\.\s:\–\-]+risk\s+factors", re.IGNORECASE),
+    "Item 1C": re.compile(r"item\s+1c[\.\s:\–\-]+cybersecurity", re.IGNORECASE),
+    "Item 2": re.compile(r"item\s+2[\.\s:\–\-]+properties", re.IGNORECASE),
+    "Item 3": re.compile(r"item\s+3[\.\s:\–\-]+legal\s+proceedings", re.IGNORECASE),
+    "Item 5": re.compile(r"item\s+5[\.\s:\–\-]+market\s+for", re.IGNORECASE),
     "Item 7": re.compile(r"item\s+7[\.\s:\–\-]+management[\'’]?s\s+discussion", re.IGNORECASE),
+    "Item 7A": re.compile(r"item\s+7a[\.\s:\–\-]+quantitative", re.IGNORECASE),
     "Item 8": re.compile(r"item\s+8[\.\s:\–\-]+financial\s+statements", re.IGNORECASE),
+    "Item 9": re.compile(r"item\s+9[\.\s:\–\-]+changes\s+in", re.IGNORECASE),
+    "Item 9A": re.compile(r"item\s+9a[\.\s:\–\-]+controls\s+and\s+procedures", re.IGNORECASE),
 }
+
 
 # For State machine
 
@@ -65,3 +74,9 @@ def parse_all_filings(base_dir: str = "./data/raw_filings/sec-edgar-filings") ->
 if __name__ == "__main__":
     parsed_nodes = parse_all_filings()
     print(f"Successfully extracted {len(parsed_nodes)} total section-annotated text nodes.")
+    
+    from collections import Counter
+    section_counts = Counter([n.metadata["section"] for n in parsed_nodes])
+    print("\n--- Section Distribution Breakdown ---")
+    for sec, count in sorted(section_counts.items()):
+        print(f"  {sec:10s}: {count} nodes")

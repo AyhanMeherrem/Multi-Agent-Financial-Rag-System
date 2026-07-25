@@ -44,11 +44,12 @@ def route_query_with_llm(query_string: str, index: VectorStoreIndex):
         Extract metadata entities from the user's question:
         - "company": "AAPL", "MSFT", or null.
         - "year": "2024", "2025", or null.
-        - "section": "Item 1A", "Item 7", "Item 8", or null.
+        - "section": "Item 1" (Business), "Item 1A" (Risk Factors), "Item 1C" (Cybersecurity), "Item 2" (Properties), "Item 3" (Legal Proceedings), "Item 5" (Market Equity), "Item 7" (MD&A), "Item 7A" (Market Risk), "Item 8" (Financial Statements), "Item 9" (Accountants), "Item 9A" (Controls), or null.
         Respond ONLY with a valid raw JSON object.
-        Example: {{"company": "AAPL", "year": "2024", "section": "Item 1A"}}
+        Example: {{"company": "AAPL", "year": "2024", "section": "Item 3"}}
         Question: "{query_string}"
         JSON Output:"""
+
 
     response = llm.complete(prompt)
     response_text = response.text.strip().replace("```json", "").replace("```", "").strip()

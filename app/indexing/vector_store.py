@@ -8,11 +8,17 @@ from app.parsing.parse_filings import parse_all_filings
 from llama_index.core.node_parser import SentenceSplitter   # To apply subchunking if we have a paragraph which has >512 tokens which is limit of structural chunking
 
 embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-large-en-v1.5")
-
 client = QdrantClient(path="./data/qdrant_db")
-vector_store = QdrantVectorStore(client=client, collection_name="financial_filings")
 
-storage_context = StorageContext.from_defaults(vector_store=vector_store)   # Basically pass which store the data will be stored
+
+if client.collection_exists("financial_filings"):
+    print("Resetting existing Qdrant collection for clean full-coverage indexing...")
+    client.delete_collection("financial_filings")
+
+vector_store = QdrantVectorStore(client=client, collection_name="financial_filings")
+storage_context = StorageContext.from_defaults(vector_store=vector_store)
+
+
 
 raw_nodes = parse_all_filings()
 print(f"Extracted {len(raw_nodes)} raw section nodes.")
