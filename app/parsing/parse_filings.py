@@ -5,14 +5,11 @@ import re
 from typing import List, Dict, Any
 
 #preloading sentence tokenization modles
-# pyrefly: ignore [missing-import]
 import nltk
 nltk.download('punkt_tab', quiet=True)
 nltk.download('averaged_perceptron_tagger_eng', quiet=True)
-# pyrefly: ignore [missing-import]
 from unstructured.partition.html import partition_html
 
-# pyrefly: ignore [missing-import]
 from llama_index.core.schema import TextNode    # For capsulating chunks (which will conver to embedding)
 
 SECTION_PATTERNS = {
@@ -28,6 +25,28 @@ SECTION_PATTERNS = {
     "Item 9": re.compile(r"item\s+9[\.\s:\–\-]+changes\s+in", re.IGNORECASE),
     "Item 9A": re.compile(r"item\s+9a[\.\s:\–\-]+controls\s+and\s+procedures", re.IGNORECASE),
 }
+
+
+PERIOD_OF_REPORT_PATTERN = re.compile(r"CONFORMED PERIOD OF REPORT:\s*(\d{8})")
+
+
+def extract_filing_year(submission_txt_path: str) -> str:
+
+
+    # Reading Sec header from fullsubmission to find out which fiscal year that pdf is from? If there is no such it we store it as 'unkown year'
+    try:
+        with open(submission_txt_path, "r", encoding="utf-8", errors="ignore") as f:
+            for _ in range(60):
+                line = f.readline()
+                if not line:
+                    break
+                match = PERIOD_OF_REPORT_PATTERN.search(line)
+                if match:
+                    return match.group(1)[:4]
+    except OSError:
+        pass
+    return "UNKNOWN_YEAR"
+
 
 
 # For State machine
@@ -63,7 +82,8 @@ def parse_all_filings(base_dir: str = "./data/raw_filings/sec-edgar-filings") ->
                 full_path = os.path.join(root, file)
                 parts = full_path.replace("\\", "/").split("/")
                 company = parts[-4] if len(parts) >= 4 else "UNKNOWN"
-                year = "2024"
+                submission_txt_path = os.path.join(root, "full-submission.txt")
+                year = extract_filing_year(submission_txt_path)
                 filing_nodes = parse_single_filing(full_path, company, year)
                 all_nodes.extend(filing_nodes)
     return all_nodes
