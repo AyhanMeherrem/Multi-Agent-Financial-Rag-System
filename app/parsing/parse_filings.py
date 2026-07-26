@@ -59,15 +59,20 @@ def parse_single_filing(html_path: str, company: str, year: str) -> List[TextNod
 
     for element in elements:
         text = str(element).strip()
-        # Skip for short texts ( maybe change len threshold to idk, regards for split) 
-        
-        # LOOPING over same patterns
-        if not text or len(text) < 20:
+        if not text:
             continue
+
+        # Check section headings on every element (even short ones like "Item 2. Properties",
+        # which is only 18 chars) before applying the content-length filter below. Otherwise
+        # short headings get skipped and the state machine never transitions into that section.
         for sec_name, pattern in SECTION_PATTERNS.items():
             if pattern.search(text[:150]):
                 current_section = sec_name
                 break
+
+        # Skip short texts ( maybe change len threshold to idk, regards for split)
+        if len(text) < 20:
+            continue
         node = TextNode(text=text, metadata={"company": company, "year": year, "section": current_section})
         nodes.append(node)
     return nodes
