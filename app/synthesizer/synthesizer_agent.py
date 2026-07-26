@@ -14,12 +14,17 @@ from app.router.router_agent import load_index_from_qdrant, route_query_with_llm
 
 load_dotenv()
 
-# 1. Launch Phoenix Server on http://localhost:6006 & Instrument Tracing
-print("Launching Arize Phoenix Observability Dashboard on http://localhost:6006...")
-phoenix_session = px.launch_app()
-set_global_handler("arize_phoenix")
 
-# 2. Upload Qdrant Vectors to Phoenix Dataset for 3D Projection
+def launch_phoenix_tracing():
+    """Launches the Arize Phoenix observability dashboard and instruments tracing.
+    Must be called explicitly (not at import time) since it starts a local server."""
+    print("Launching Arize Phoenix Observability Dashboard on http://localhost:6006...")
+    phoenix_session = px.launch_app()
+    set_global_handler("arize_phoenix")
+    return phoenix_session
+
+
+# for 3D Projection
 def upload_qdrant_dataset_with_vectors(index):
     try:
         qdrant_client = index.storage_context.vector_store.client
@@ -43,12 +48,14 @@ def upload_qdrant_dataset_with_vectors(index):
             input_keys=["text"],
             metadata_keys=["company", "year", "section"]
         )
-        print("✅ Vector dataset registered in Arize Phoenix successfully!")
+        print("Vector dataset registered in Arize")
     except Exception as e:
         print(f"Dataset notice: {e}")
 
 def get_synthesizer_llm() -> Groq:
-    """Initializes Groq LPU LLM Engine (llama-3.3-70b-versatile)."""
+    
+    #initializing groq lpu
+
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key or api_key == "your_groq_api_key_here":
         raise ValueError("GROQ_API_KEY is missing or unconfigured in .env file!")
@@ -75,12 +82,12 @@ def synthesize_financial_answer(query_str: str, index):
     return response.text
 
 if __name__ == "__main__":
+    launch_phoenix_tracing()
     index = load_index_from_qdrant()
     upload_qdrant_dataset_with_vectors(index)
     
     print("\n=======================================================")
-    print("🚀 Arize Phoenix Dashboard Active at: http://localhost:6006")
-    print("Interactive Financial RAG Session Active!")
+    print("Interactive Financial RAG session active ")
     print("Type any question below (or type 'exit' to quit):")
     print("=======================================================\n")
     
