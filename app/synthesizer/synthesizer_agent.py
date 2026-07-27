@@ -16,9 +16,7 @@ load_dotenv()
 
 
 def launch_phoenix_tracing():
-    """Launches the Arize Phoenix observability dashboard and instruments tracing.
-    Must be called explicitly (not at import time) since it starts a local server."""
-    print("Launching Arize Phoenix Observability Dashboard on http://localhost:6006...")
+    print("Launching Arize Dashboard on local")
     phoenix_session = px.launch_app()
     set_global_handler("arize_phoenix")
     return phoenix_session
@@ -63,7 +61,10 @@ def get_synthesizer_llm() -> Groq:
 
 def synthesize_financial_answer(query_str: str, index):
     nodes, filters = route_query_with_llm(query_str, index)
-    context_text = "\n\n".join([node.node.text for node in nodes])
+    context_text = "\n\n".join(
+        f"[{node.node.metadata.get('company', 'N/A')} | {node.node.metadata.get('year', 'N/A')} | {node.node.metadata.get('section', 'N/A')}]\n{node.node.text}"
+        for node in nodes
+    )
     synthesizer_llm = get_synthesizer_llm()
     prompt = f"""You are an expert financial analyst assistant specializing in SEC 10-K filings.
                 Answer the user's question based strictly on the provided financial context below.

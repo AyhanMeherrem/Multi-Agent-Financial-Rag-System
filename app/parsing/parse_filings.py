@@ -28,6 +28,7 @@ SECTION_PATTERNS = {
 
 
 PERIOD_OF_REPORT_PATTERN = re.compile(r"CONFORMED PERIOD OF REPORT:\s*(\d{8})")
+PAGE_FOOTER_PATTERN = re.compile(r"^.{0,60}\|\s*\d{4}\s*Form\s+10-K\s*\|\s*\d+\s*$")
 
 
 def extract_filing_year(submission_txt_path: str) -> str:
@@ -72,6 +73,9 @@ def parse_single_filing(html_path: str, company: str, year: str) -> List[TextNod
 
         # Skip short texts ( maybe change len threshold to idk, regards for split)
         if len(text) < 20:
+            continue
+
+        if PAGE_FOOTER_PATTERN.match(text):
             continue
         node = TextNode(text=text, metadata={"company": company, "year": year, "section": current_section})
         nodes.append(node)

@@ -12,9 +12,8 @@ import json # For parsing filtering metadata from user query  text
 load_dotenv()
 
 def get_router_llm() -> Groq:
-    """
-    Initializes Groq LPU LLM Engine (llama-3.1-8b) for metadata parsing and routing.
-    """
+    
+    # Initialize Groq(llama 3.1.8b) for parsing and routing
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key or api_key == "your_groq_api_key_here":
         raise ValueError(
@@ -42,18 +41,19 @@ def route_query_with_llm(query_string: str, index: VectorStoreIndex):
 
     prompt = f"""You are an SEC 10-K query router agent.
         Extract metadata entities from the user's question:
-        - "company": "AAPL", "MSFT", or null.
+        - "companies": a JSON array of tickers mentioned, from "AAPL" / "MSFT". Empty array if none.
         - "year": "2024", "2025", or null.
         - "section": "Item 1" (Business), "Item 1A" (Risk Factors), "Item 1C" (Cybersecurity), "Item 2" (Properties), "Item 3" (Legal Proceedings), "Item 5" (Market Equity), "Item 7" (MD&A), "Item 7A" (Market Risk), "Item 8" (Financial Statements), "Item 9" (Accountants), "Item 9A" (Controls), or null.
         Respond ONLY with a valid raw JSON object.
-        Example: {{"company": "AAPL", "year": "2024", "section": "Item 3"}}
+        Example (comparison): {{"companies": ["AAPL", "MSFT"], "year": "2024", "section": "Item 7"}}
+        Example (single): {{"companies": ["AAPL"], "year": "2024", "section": "Item 3"}}
         Question: "{query_string}"
         JSON Output:"""
 
 
     response = llm.complete(prompt)
     response_text = response.text.strip().replace("```json", "").replace("```", "").strip()
-    
+
     import re
     match = re.search(r'\{.*\}', response_text, re.DOTALL)
     if match:
@@ -64,15 +64,16 @@ def route_query_with_llm(query_string: str, index: VectorStoreIndex):
     else:
         filter_dict = {}
 
+    companies = filter_dict.get("companies") or [None]
+    year = str(filter_dict.get("year")) if filter_dict.get("year") else None
+    section = filter_dict.get("section")
 
-    retriever = get_sec_retriever(index, 
-    company=filter_dict.get("company"), 
-    year=str(filter_dict.get("year")) if filter_dict.get("year") else None, 
-    section=filter_dict.get("section"), 
-    top_k=5)
+    all_nodes = []
+    for company in companies:
+        retriever = get_sec_retriever(index, company=company, year=year, section=section, top_k=5)
+        all_nodes.extend(retriever.retrieve(query_string))
 
-    nodes = retriever.retrieve(query_string)
-    return nodes, filter_dict
+    return all_nodes, filter_dict
 
 
 """"""""""""""""""""""""""""""""""""""""HELPER TEST FUNCTION """""""""""""""""
