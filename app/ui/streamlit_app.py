@@ -1,3 +1,4 @@
+import html
 import os
 import requests
 import streamlit as st
@@ -70,7 +71,7 @@ st.markdown(
 EXAMPLE_QUERIES = [
     "Compare Apple's and Microsoft's total net revenue for fiscal year 2024.",
     "What were Apple's primary risk factors in 2024?",
-    "Summarize Microsoft's legal proceedings in 2024.",
+    "What were Microsoft's primary cybersecurity risks in 2024?",
 ]
 
 if "query_input" not in st.session_state:
@@ -86,26 +87,44 @@ user_query = st.text_input("Query", key="query_input", placeholder="Ask somethin
 isGenerateClicked = st.button("Generate", type="primary")
 
 url = os.getenv("BACKEND_URL", "http://127.0.0.1:8000/query")
+backend_api_key = os.getenv("BACKEND_API_KEY", "")
 
 if isGenerateClicked:
     try:
         with st.spinner("Routing query and retrieving filings..."):
-            response = requests.post(url, json={"query": user_query}, timeout=60)
+            response = requests.post(
+                url,
+                json={"query": user_query},
+                headers={"X-Internal-Key": backend_api_key},
+                timeout=60,
+            )
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
         st.error(f"Could not reach the backend at {url}: {e}")
     else:
         result = response.json()
-        # Markdown treats a single "$" as the start of a LaTeX math span, which
-        # mangles dollar amounts like "$391,035 million". A backslash escape isn't
-        # honored here since this is rendered as raw HTML, not parsed Markdown —
-        # use the HTML entity instead so "$" displays literally.
-        safe_answer = result["answer"].replace("$", "&#36;")
+        # This is rendered via unsafe_allow_html=True, so the LLM's raw output must be
+        # HTML-escaped first — otherwise a prompt-injected "<script>...</script>" (or any
+        # stray "<"/">"/"&") in the answer would be parsed as live markup, not text.
+        # Escape before the "$" fix below: html.escape() would otherwise double-encode
+        # the "&" we introduce via "&#36;".
+        safe_answer = html.escape(result["answer"])
+        # Markdown/HTML treats a single "$" as the start of a LaTeX math span, which
+        # mangles dollar amounts like "$391,035 million" — swap in the literal entity.
+        safe_answer = safe_answer.replace("$", "&#36;")
         st.markdown(f'<div class="answer-card">{safe_answer}</div>', unsafe_allow_html=True)
 
         badge_cols = st.columns(2)
         badge_cols[0].metric("Companies", ", ".join(result.get("companies") or []) or "—")
         badge_cols[1].metric("Year", result.get("year") or "—")
+
+        source_urls = result.get("source_urls")
+        if source_urls:
+            links = " · ".join(
+                f'<a href="{html.escape(link)}" target="_blank">{html.escape(company)} 10-K on SEC EDGAR</a>'
+                for company, link in source_urls.items()
+            )
+            st.markdown(f'<div class="subtitle" style="margin-top:0.75rem;">Sources: {links}</div>', unsafe_allow_html=True)
 
 st.markdown(
     '<div class="footer">Built by <a href="https://github.com/AyhanMeherrem/Multi-Agent-Financial-Rag-System" '

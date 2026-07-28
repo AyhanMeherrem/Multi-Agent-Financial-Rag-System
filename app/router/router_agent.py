@@ -12,8 +12,7 @@ import json
 
 load_dotenv()
 
-# Only known values the router will accept. Anything else in the
-# LLM JSON output (like {"banana": "banana"}) will be deleted instead of passing them to retrieval
+# Only known values the router will accept. Anything else in the LLM JSON output (like {"banana": "banana"}) will be deleted instead of passing them to retrieval
 VALID_COMPANIES = {"AAPL", "MSFT"}
 VALID_SECTIONS = {
     "Item 1", "Item 1A", "Item 1C", "Item 2", "Item 3", "Item 5",
@@ -111,6 +110,11 @@ def route_query_with_llm(query_string: str, index: VectorStoreIndex):
     for company in companies:
         retriever = get_sec_retriever(index, company=company, year=year, section=section, top_k=5)
         all_nodes.extend(retriever.retrieve(query_string))
+
+        # item 3 bug fix, without this fix, the router agent will not find the legal proceedings section in 10-K 
+        if section == "Item 3":
+            fallback_retriever = get_sec_retriever(index, company=company, year=year, section=None, top_k=5)
+            all_nodes.extend(fallback_retriever.retrieve(query_string))
 
     return all_nodes, filter_dict
 
