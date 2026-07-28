@@ -44,9 +44,19 @@ def route_query_with_llm(query_string: str, index: VectorStoreIndex):
         - "companies": a JSON array of tickers mentioned, from "AAPL" / "MSFT". Empty array if none.
         - "year": "2024", "2025", or null.
         - "section": "Item 1" (Business), "Item 1A" (Risk Factors), "Item 1C" (Cybersecurity), "Item 2" (Properties), "Item 3" (Legal Proceedings), "Item 5" (Market Equity), "Item 7" (MD&A), "Item 7A" (Market Risk), "Item 8" (Financial Statements), "Item 9" (Accountants), "Item 9A" (Controls), or null.
+
+        Use these keyword-to-section mappings when the question doesn't literally say "Item N":
+        - revenue, net sales, net income, earnings, profit, expenses, cost of sales, cash flow, balance sheet, financial statements, EPS -> "Item 8"
+        - discussion of results, trends, outlook, liquidity, capital resources -> "Item 7"
+        - risks, uncertainties, threats -> "Item 1A"
+        - lawsuits, litigation, legal disputes -> "Item 3"
+        - what the company does, products, segments, business model -> "Item 1"
+        If the question mixes concepts (e.g. asks about revenue trends), prefer "Item 8" for concrete figures and "Item 7" for narrative analysis.
+
         Respond ONLY with a valid raw JSON object.
         Example (comparison): {{"companies": ["AAPL", "MSFT"], "year": "2024", "section": "Item 7"}}
         Example (single): {{"companies": ["AAPL"], "year": "2024", "section": "Item 3"}}
+        Example (revenue keyword, no explicit "Item"): Question: "Compare Apple's and Microsoft's total net revenue for fiscal year 2024." -> {{"companies": ["AAPL", "MSFT"], "year": "2024", "section": "Item 8"}}
         Question: "{query_string}"
         JSON Output:"""
 
