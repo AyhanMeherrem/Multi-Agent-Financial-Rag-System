@@ -26,6 +26,6 @@ app = FastAPI(title='Financial RAG System', lifespan=lifespan)
 async def financial_query(body:QueryRequest, request: Request):
     index = request.app.state.index
     final_answer, filters = synthesize_financial_answer(body.query, index)
-    return AgentResponse(answer=final_answer, companies=filters["companies"], year=filters["year"])
+    return AgentResponse(answer=final_answer, companies=filters.get("companies"), year=filters.get("year"))
 
     
