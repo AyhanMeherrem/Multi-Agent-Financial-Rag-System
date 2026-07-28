@@ -17,5 +17,10 @@ USER appuser
 
 RUN python -c "import nltk; nltk.download('punkt_tab', quiet=True); nltk.download('averaged_perceptron_tagger_eng', quiet=True); from llama_index.embeddings.huggingface import HuggingFaceEmbedding; HuggingFaceEmbedding(model_name='BAAI/bge-large-en-v1.5')"
 COPY --chown=appuser:appuser app ./app
+# Bake the Qdrant index into the image — Azure Container Apps has no equivalent of the
+# local bind-mount (docker-compose.yml's ./data/qdrant_db volume), so without this the
+# container has no vector data to serve at all. Means the image must be rebuilt/pushed
+# whenever the underlying filing index changes — acceptable at this project's scale.
+COPY --chown=appuser:appuser data/qdrant_db ./data/qdrant_db
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

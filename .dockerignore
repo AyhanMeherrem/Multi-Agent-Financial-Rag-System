@@ -4,7 +4,8 @@ myNotes.md
 *.log
 .git
 sec_edgar_filings/
-data/
+data/raw_filings/
+data/qdrant_db/.lock
 __pycache__/
 *.pyc
 .venv
