@@ -85,18 +85,21 @@ for col, example in zip(example_cols, EXAMPLE_QUERIES):
 
 user_query = st.text_input("Query", key="query_input", placeholder="Ask something about AAPL or MSFT's 10-K...")
 isGenerateClicked = st.button("Generate", type="primary")
+st.caption("⏱️ Runs on a serverless backend that sleeps when idle to save cost  if this is the first "
+           "visit in a while, the first response can take up to a minute or two while it wakes up. "
+           "That's infrastructure cold start, not the model itself being slow.")
 
 url = os.getenv("BACKEND_URL", "http://127.0.0.1:8000/query")
 backend_api_key = os.getenv("BACKEND_API_KEY", "")
 
 if isGenerateClicked:
     try:
-        with st.spinner("Routing query and retrieving filings..."):
+        with st.spinner("Routing query and retrieving filings... (first request after inactivity may take a minute or two, the backend is waking up)"):
             response = requests.post(
                 url,
                 json={"query": user_query},
                 headers={"X-Internal-Key": backend_api_key},
-                timeout=60,
+                timeout=180,
             )
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
