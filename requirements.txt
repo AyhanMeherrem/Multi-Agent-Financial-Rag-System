@@ -12,6 +12,7 @@ unstructured[html]==0.24.1
 lxml==6.1.1
 fastapi==0.139.2
 uvicorn==0.51.0
+slowapi==0.1.9
 streamlit==1.60.0
 arize-phoenix==19.5.0
 python-dotenv==1.2.2
