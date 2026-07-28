@@ -1,7 +1,13 @@
 FROM python:3.13-slim
 WORKDIR /app
+ENV PYTHONUNBUFFERED=1
 COPY requirements-frontend.txt ./
 RUN pip install --no-cache-dir -r requirements-frontend.txt
-COPY app/ui ./app/ui
+
+# Run as a non-root user rather than the default root — same reasoning as Dockerfile.backend.
+RUN useradd --create-home --shell /bin/false appuser
+USER appuser
+
+COPY --chown=appuser:appuser app/ui ./app/ui
 EXPOSE 8501
 CMD ["streamlit", "run", "app/ui/streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]

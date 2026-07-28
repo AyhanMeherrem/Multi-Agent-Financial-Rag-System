@@ -1,9 +1,21 @@
 FROM python:3.13-slim
 WORKDIR /app
+# Unbuffered stdout/stderr — without this, Python fully buffers output when it's not
+# attached to a TTY (always true in a container), so log lines (including tracebacks)
+# can sit invisible in the buffer instead of reaching `docker logs` in real time.
+ENV PYTHONUNBUFFERED=1
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential libxml2-dev libxslt1-dev && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Run as a non-root user, not the default root — limits the blast radius if the
+# container is ever compromised (e.g. via a dependency RCE). Created before the
+# NLTK/model download step so those files land under this user's home with the
+# right ownership, instead of under /root where the runtime user couldn't read them.
+RUN useradd --create-home --shell /bin/false appuser
+USER appuser
+
 RUN python -c "import nltk; nltk.download('punkt_tab', quiet=True); nltk.download('averaged_perceptron_tagger_eng', quiet=True); from llama_index.embeddings.huggingface import HuggingFaceEmbedding; HuggingFaceEmbedding(model_name='BAAI/bge-large-en-v1.5')"
-COPY app ./app
+COPY --chown=appuser:appuser app ./app
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

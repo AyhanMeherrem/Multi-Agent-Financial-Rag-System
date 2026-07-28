@@ -7,6 +7,8 @@ services:
       - "8000:8000"
     volumes:
       - ./data/qdrant_db:/app/data/qdrant_db
+    environment:
+      - PYTHONUNBUFFERED=1
     env_file:
       - .env
 
@@ -18,5 +20,6 @@ services:
       - "8501:8501"
     environment:
       - BACKEND_URL=http://backend:8000/query
+      - BACKEND_API_KEY=${BACKEND_API_KEY}
     depends_on:
       - backend
