@@ -80,7 +80,7 @@ def synthesize_financial_answer(query_str: str, index):
     response = synthesizer_llm.complete(prompt)
     print("\n--- Final Synthesized Financial Answer ---")
     print(response.text)
-    return response.text
+    return response.text, filters
 
 if __name__ == "__main__":
     launch_phoenix_tracing()
