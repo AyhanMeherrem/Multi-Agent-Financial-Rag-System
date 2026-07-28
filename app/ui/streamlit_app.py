@@ -1,10 +1,11 @@
+import os
 import requests
 import streamlit as st
 st.title("Financial Expert Agent")
 user_query = st.text_input("Query")
 isGenerateClicked = st.button("Generate")
 
-url = "http://127.0.0.1:8000/query"
+url = os.getenv("BACKEND_URL", "http://127.0.0.1:8000/query")
 
 if isGenerateClicked:
     try:

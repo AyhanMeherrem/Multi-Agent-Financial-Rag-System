@@ -5,8 +5,6 @@ sys.stdout.reconfigure(encoding='utf-8')
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
 from dotenv import load_dotenv
-import phoenix as px
-from phoenix.client import Client
 from llama_index.core import set_global_handler
 from llama_index.core.llms import ChatMessage, MessageRole
 from llama_index.llms.groq import Groq
@@ -17,6 +15,12 @@ load_dotenv()
 
 
 def launch_phoenix_tracing():
+    # Imported lazily: phoenix pulls in strawberry-graphql, whose pydantic
+    # compatibility shim is fragile across pydantic versions. Only the
+    # local/dev observability path needs it, not the FastAPI serving path,
+    # so importing it here (not at module level) keeps the API container
+    # from needing a working phoenix install just to answer queries.
+    import phoenix as px
     print("Launching Arize Dashboard on local")
     phoenix_session = px.launch_app()
     set_global_handler("arize_phoenix")
@@ -25,6 +29,7 @@ def launch_phoenix_tracing():
 
 # for 3D Projection
 def upload_qdrant_dataset_with_vectors(index):
+    from phoenix.client import Client
     try:
         qdrant_client = index.storage_context.vector_store.client
         points, _ = qdrant_client.scroll(collection_name="financial_filings", limit=3000, with_vectors=True)
