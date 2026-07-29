@@ -6,19 +6,19 @@
 [![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A Retrieval Augmented Generation system that answers questions about **Apple (AAPL)** and **Microsoft (MSFT)** SEC 10-K filings — including side by side comparisons — using a two agent LLM pipeline (routing + synthesis) over a locally embedded, metadata filtered Qdrant vector store.
+A Retrieval Augmented Generation system that answers questions about **Apple (AAPL)** and **Microsoft (MSFT)** SEC 10-K filings including side by side comparisons using a two agent LLM pipeline (routing + synthesis) over a locally embedded, metadata filtered Qdrant vector store.
 
 **Live demo:** https://financial-rag-frontend.graydesert-4f40e327.italynorth.azurecontainerapps.io
 
-> Runs on Azure Container Apps' consumption plan, which scales to zero when idle. The first request after a period of inactivity can take 1-2 minutes to wake up — that's infrastructure cold start, not the model being slow.
+> Runs on Azure Container Apps' consumption plan, which scales to zero when idle. The first request after a period of inactivity can take 1-2 minutes to wake up that's infrastructure cold start, not the model being slow.
 
 ## What it does
 
 Ask a question like:
 
 - *"Compare Apple's and Microsoft's total net revenue for fiscal year 2024."*
-- *"What were Apple's primary risk factors in 2024?"*
-- *"What were Microsoft's primary cybersecurity risks in 2024?"*
+- *"How did Apple's net income change between fiscal year 2024 and fiscal year 2025?"*
+- *"What is Microsoft's core business model and main product segments?"*
 
 The system extracts which company/companies, fiscal year, and 10-K section (Item 1, 1A, 7, 8, etc.) the question is about, retrieves only the matching filing chunks from Qdrant, and synthesizes a grounded answer with links back to the source filing on SEC EDGAR.
 
@@ -76,21 +76,22 @@ Tracing/observability across the router and synthesizer calls is instrumented wi
 | Synthesizer LLM| Groq `llama-3.3-70b-versatile`                      |
 | Backend        | FastAPI + Uvicorn, rate limited (`slowapi`), internal key auth |
 | Frontend       | Streamlit                                           |
+| Observability  | Arize Phoenix (local dev tracing, not in production) |
 | Deployment     | Docker → Azure Container Apps (via ACR)             |
 
 ## Security notes
 
-- The backend is deployed with **internal only ingress** — it isn't reachable directly from the internet, only from the frontend container inside Azure's environment.
+- The backend is deployed with **internal only ingress** it isn't reachable directly from the internet, only from the frontend container inside Azure's environment.
 - Every `/query` request from the frontend must carry a shared `X-Internal-Key` header, checked with a constant time comparison (`secrets.compare_digest`) to avoid timing attacks.
 - Per IP rate limiting (10 requests/minute) via `slowapi`.
 - The router's system prompt explicitly frames the user's message as untrusted data to extract fields from, not instructions to follow, to reduce (not eliminate) prompt injection risk.
-- The Streamlit UI HTML escapes the LLM's answer before rendering it, since the answer is displayed via `unsafe_allow_html=True` — otherwise injected `<script>` or stray markup in a synthesized answer would execute as live HTML.
+- The Streamlit UI HTML escapes the LLM's answer before rendering it, since the answer is displayed via `unsafe_allow_html=True` otherwise injected `<script>` or stray markup in a synthesized answer would execute as live HTML.
 
 ## Running locally
 
 Requirements: Python 3.13, Docker (optional, for the containerized path), a [Groq API key](https://console.groq.com/).
 
-### Option A — plain Python
+### Option A plain Python
 
 ```bash
 pip install -r requirements.txt
@@ -119,13 +120,13 @@ BACKEND_API_KEY=...        # shared secret between frontend and backend
 BACKEND_URL=http://127.0.0.1:8000/query   # set on the frontend
 ```
 
-### Option B — Docker Compose
+### Option B Docker Compose
 
 ```bash
 docker-compose up --build
 ```
 
-Builds `Dockerfile.backend` (FastAPI + baked in Qdrant index) and `Dockerfile.frontend` (Streamlit), and wires them together with `BACKEND_URL=http://backend:8000/query`. The Qdrant index must already exist at `./data/qdrant_db` before building — it's baked into the backend image rather than mounted, since Azure Container Apps has no persistent volume equivalent.
+Builds `Dockerfile.backend` (FastAPI + baked in Qdrant index) and `Dockerfile.frontend` (Streamlit), and wires them together with `BACKEND_URL=http://backend:8000/query`. The Qdrant index must already exist at `./data/qdrant_db` before building it's baked into the backend image rather than mounted, since Azure Container Apps has no persistent volume equivalent.
 
 ## License
 
