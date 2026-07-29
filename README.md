@@ -1,5 +1,11 @@
 # Multi Agent Financial RAG System
 
+[![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-005571?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
+[![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A Retrieval Augmented Generation system that answers questions about **Apple (AAPL)** and **Microsoft (MSFT)** SEC 10-K filings — including side by side comparisons — using a two agent LLM pipeline (routing + synthesis) over a locally embedded, metadata filtered Qdrant vector store.
 
 **Live demo:** https://financial-rag-frontend.graydesert-4f40e327.italynorth.azurecontainerapps.io
