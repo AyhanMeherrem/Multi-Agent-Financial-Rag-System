@@ -16,6 +16,10 @@ Ask a question like:
 
 The system extracts which company/companies, fiscal year, and 10-K section (Item 1, 1A, 7, 8, etc.) the question is about, retrieves only the matching filing chunks from Qdrant, and synthesizes a grounded answer with links back to the source filing on SEC EDGAR.
 
+## Demo
+
+![Demo: comparing Apple and Microsoft revenue](assets/demo.gif)
+
 ## Architecture
 
 ```
@@ -109,10 +113,6 @@ docker-compose up --build
 ```
 
 Builds `Dockerfile.backend` (FastAPI + baked-in Qdrant index) and `Dockerfile.frontend` (Streamlit), and wires them together with `BACKEND_URL=http://backend:8000/query`. The Qdrant index must already exist at `./data/qdrant_db` before building — it's baked into the backend image rather than mounted, since Azure Container Apps has no persistent volume equivalent.
-
-## Project status
-
-Early-stage, single-contributor learning project — built to understand RAG internals (vector spaces, metadata filtering, LLM routing, cloud infra) end to end, not just to ship. See `CLAUDE.md` for the full stage-by-stage build log and known architectural constraints.
 
 ## License
 
