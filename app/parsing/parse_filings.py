@@ -6,8 +6,8 @@ from typing import List, Dict, Any
 
 #preloading sentence tokenization modles
 import nltk
-nltk.download('punkt_tab', quiet=True)
-nltk.download('averaged_perceptron_tagger_eng', quiet=True)
+nltk.download('punkt_tab', quiet=True)  # For deciding if sentence ended or not
+nltk.download('averaged_perceptron_tagger_eng', quiet=True) # For knowing context of words and its grammaticaly role(verb, noun etc.)
 from unstructured.partition.html import partition_html
 
 from llama_index.core.schema import TextNode    # For capsulating chunks (which will conver to embedding)
@@ -27,12 +27,11 @@ SECTION_PATTERNS = {
 }
 
 
-PERIOD_OF_REPORT_PATTERN = re.compile(r"CONFORMED PERIOD OF REPORT:\s*(\d{8})")
-PAGE_FOOTER_PATTERN = re.compile(r"^.{0,60}\|\s*\d{4}\s*Form\s+10-K\s*\|\s*\d+\s*$")
+PERIOD_OF_REPORT_PATTERN = re.compile(r"CONFORMED PERIOD OF REPORT:\s*(\d{8})") # For retrieving year info from txt
+PAGE_FOOTER_PATTERN = re.compile(r"^.{0,60}\|\s*\d{4}\s*Form\s+10-K\s*\|\s*\d+\s*$") #For identifying footers to skip
 
 
 def extract_filing_year(submission_txt_path: str) -> str:
-
 
     # Reading Sec header from fullsubmission to find out which fiscal year that pdf is from? If there is no such it we store it as 'unkown year'
     try:
@@ -54,7 +53,9 @@ def extract_filing_year(submission_txt_path: str) -> str:
 
 def parse_single_filing(html_path: str, company: str, year: str) -> List[TextNode]:
     print(f"Partitioning HTML dom tree for {company} ({year}): {html_path}")
-    elements = partition_html(filename=html_path, include_page_breaks=False)    # ALl html
+    elements = partition_html(filename=html_path, include_page_breaks=False)# ALl html elements flattened except page_breaks
+    # elements = [Title(text="Item 1A. Risk Factor"), ListItem(text="The Company faces intense competition"), ...]
+
     nodes: List[TextNode] = []
     current_section = "General" # To track which chapter are we in while iterating over 
 
@@ -84,7 +85,7 @@ def parse_single_filing(html_path: str, company: str, year: str) -> List[TextNod
 
 # Returing all filings inside DB
 def parse_all_filings(base_dir: str = "./data/raw_filings/sec-edgar-filings") -> List[TextNode]:
-    all_nodes: List[TextNode] = []
+    all_nodes: List[TextNode] = []  # default is empty TextNode list.
     for root, _, files in os.walk(base_dir):
         for file in files:
             if file.endswith(".html") or file.endswith(".htm"):
@@ -104,6 +105,7 @@ if __name__ == "__main__":
     parsed_nodes = parse_all_filings()
     print(f"Successfully extracted {len(parsed_nodes)} total section-annotated text nodes.")
     
+    # just for visualing how many node we have per section.
     from collections import Counter
     section_counts = Counter([n.metadata["section"] for n in parsed_nodes])
     print("\n--- Section Distribution Breakdown ---")
