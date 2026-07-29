@@ -11,8 +11,8 @@ A Retrieval Augmented Generation system that answers questions about **Apple (AA
 Ask a question like:
 
 - *"Compare Apple's and Microsoft's total net revenue for fiscal year 2024."*
-- *"What were Apple's primary risk factors in 2024?"*
-- *"What were Microsoft's primary cybersecurity risks in 2024?"*
+- *"How did Apple's net income change between fiscal year 2024 and fiscal year 2025?"*
+- *"What is Microsoft's core business model and main product segments?"*
 
 The system extracts which company/companies, fiscal year, and 10-K section (Item 1, 1A, 7, 8, etc.) the question is about, retrieves only the matching filing chunks from Qdrant, and synthesizes a grounded answer with links back to the source filing on SEC EDGAR.
 
