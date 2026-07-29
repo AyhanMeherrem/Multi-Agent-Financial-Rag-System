@@ -1,9 +1,15 @@
 # Multi Agent Financial RAG System
 
 [![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![LlamaIndex](https://img.shields.io/badge/LlamaIndex-4B5563)](https://www.llamaindex.ai/)
+[![Qdrant](https://img.shields.io/badge/Qdrant-DC244C?logo=qdrant&logoColor=white)](https://qdrant.tech/)
+[![Groq](https://img.shields.io/badge/Groq-F55036)](https://groq.com/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-005571?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Uvicorn](https://img.shields.io/badge/Uvicorn-4B5563)](https://www.uvicorn.org/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
 [![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![Azure Container Apps](https://img.shields.io/badge/Azure_Container_Apps-0078D4)](https://azure.microsoft.com/en-us/products/container-apps)
+[![Arize Phoenix](https://img.shields.io/badge/Arize_Phoenix-4B5563)](https://phoenix.arize.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A Retrieval Augmented Generation system that answers questions about **Apple (AAPL)** and **Microsoft (MSFT)** SEC 10-K filings including side by side comparisons using a two agent LLM pipeline (routing + synthesis) over a locally embedded, metadata filtered Qdrant vector store.
