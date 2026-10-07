@@ -147,7 +147,6 @@ activemq-data/
 # SageMath parsed files
 *.sage.py
 
-CLAUDE.md
 
 # Environments
 .env
@@ -220,7 +219,6 @@ __marimo__/
 .streamlit/secrets.toml
 
 AGENTS.md
-myNotes.md
 .vscode/
 data/
 sec_edgar_filings/
