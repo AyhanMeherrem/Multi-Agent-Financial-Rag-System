@@ -35,13 +35,14 @@ def sanitize_filter_dict(filter_dict: dict) -> dict:
 
 def get_router_llm() -> Groq:
     
-    # Initialize Groq(llama 3.1.8b) for parsing and routing
+    # Initialize Groq (gpt-oss-20b) for parsing and routing. It is a reasoning model;
+    # low effort keeps latency and token use down for this small extraction task.
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key or api_key == "your_groq_api_key_here":
         raise ValueError(
             "GROQ_API_KEY is missing or unconfigured in .env file!"
         )
-    return Groq(model="llama-3.1-8b-instant", api_key=api_key)
+    return Groq(model="openai/gpt-oss-20b", api_key=api_key, additional_kwargs={"reasoning_effort": "low"})
 
 def construct_sec_filters(company:str=None, year:str=None, section:str=None) -> MetadataFilters:
     filters = []

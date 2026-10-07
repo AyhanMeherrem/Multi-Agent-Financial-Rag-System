@@ -61,7 +61,7 @@ def get_synthesizer_llm() -> Groq:
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key or api_key == "your_groq_api_key_here":
         raise ValueError("GROQ_API_KEY is missing or unconfigured in .env file!")
-    return Groq(model="llama-3.3-70b-versatile", api_key=api_key)
+    return Groq(model="openai/gpt-oss-120b", api_key=api_key, additional_kwargs={"reasoning_effort": "low"})
 
 def synthesize_financial_answer(query_str: str, index):
     nodes, filters = route_query_with_llm(query_str, index)
