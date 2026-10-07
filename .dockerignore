@@ -2,6 +2,8 @@
 *.md
 # Hidden files and folders (.env, .git, .venv, editor and tool settings)
 .*
+# ...except the Streamlit theme config, which the frontend image needs
+!.streamlit/config.toml
 .env
 *.log
 .git
