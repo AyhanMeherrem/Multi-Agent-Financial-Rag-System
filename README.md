@@ -100,16 +100,17 @@ Requirements: Python 3.13, Docker (optional, for the containerized path), a [Gro
 ### Option A plain Python
 
 ```bash
-pip install -r requirements.txt
+# Everything for local development (requirements.txt alone is the backend runtime)
+pip install -r requirements-dev.txt
 
 # 1. Download filings (AAPL, MSFT 10-Ks)
-python app/ingestion/download_filings.py
+python -m app.ingestion.download_filings
 
 # 2. Parse into section tagged nodes
-python app/parsing/parse_filings.py
+python -m app.parsing.parse_filings
 
 # 3. Embed + build the local Qdrant index (~10-15 min on CPU)
-python app/indexing/vector_store.py
+python -m app.indexing.vector_store
 
 # 4. Run the backend
 uvicorn app.main:app --reload

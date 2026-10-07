@@ -1,7 +1,6 @@
+# Run from the repo root: python -m app.indexing.vector_store
 import os
 import shutil
-import sys
-sys.path.append(".")
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from qdrant_client import QdrantClient
 from llama_index.vector_stores.qdrant import QdrantVectorStore

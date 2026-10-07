@@ -1,10 +1,9 @@
 # HELPER FUNCTİOBN FOR BUILDING NODES IN 3D
+# Dev-only script (needs requirements-dev.txt). Run from the repo root: python -m app.indexing.plot_3d_vectors
 
-import os
+import json
 import sys
-sys.path.append(".")
 sys.stdout.reconfigure(encoding='utf-8')
-os.environ["PYTHONIOENCODING"] = "utf-8"
 
 import numpy as np
 import pandas as pd
@@ -24,7 +23,8 @@ vectors = np.array([p.vector for p in points])
 companies = [str(p.payload.get("company", "Unknown")) for p in points]
 sections = [str(p.payload.get("section", "Unknown")) for p in points]
 years = [str(p.payload.get("year", "Unknown")) for p in points]
-snippets = [str(p.payload.get("text", ""))[:120].replace("\n", " ") + "..." for p in points]
+# LlamaIndex stores the chunk text inside the serialized node (_node_content), not as a "text" key
+snippets = [json.loads(p.payload.get("_node_content", "{}")).get("text", "")[:120].replace("\n", " ") + "..." for p in points]
 
 # Applying PCA reductio n to convert it into 
 pca = PCA(n_components=3)

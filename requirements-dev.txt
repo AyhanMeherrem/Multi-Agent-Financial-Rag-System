@@ -1,0 +1,20 @@
+# Everything for local development: the backend runtime, the frontend, the data pipeline
+# (download, parse, index), dev tools (Phoenix tracing, 3D plot), the eval harness and tests.
+-r requirements.txt
+-r requirements-frontend.txt
+
+# Ingestion and parsing pipeline
+sec-edgar-downloader==5.1.0
+pyrate-limiter==4.4.0
+unstructured[html]==0.24.1
+lxml==6.1.1
+
+# Dev tools: Phoenix tracing, vector plot
+arize-phoenix==19.5.0
+pandas==3.0.5
+plotly==6.9.0
+scikit-learn==1.9.0
+
+# Tests and linting
+pytest==9.1.1
+ruff==0.16.10

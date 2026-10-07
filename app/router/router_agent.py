@@ -1,6 +1,4 @@
 import os
-import sys
-sys.path.append(".")
 from dotenv import load_dotenv
 from llama_index.llms.groq import Groq
 from llama_index.core.llms import ChatMessage, MessageRole
