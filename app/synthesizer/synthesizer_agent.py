@@ -63,13 +63,13 @@ def get_synthesizer_llm() -> Groq:
         raise ValueError("GROQ_API_KEY is missing or unconfigured in .env file!")
     return Groq(model="openai/gpt-oss-120b", api_key=api_key, additional_kwargs={"reasoning_effort": "low"})
 
-def synthesize_financial_answer(query_str: str, index):
-    nodes, filters = route_query_with_llm(query_str, index)
+# llm can be passed in (the eval harness passes a cached, temperature 0 client); the app uses the default
+def generate_answer(query_str: str, nodes: list, llm=None) -> str:
     context_text = "\n\n".join(
         f"[{node.node.metadata.get('company', 'N/A')} | {node.node.metadata.get('year', 'N/A')} | {node.node.metadata.get('section', 'N/A')}]\n{node.node.text}"
         for node in nodes
     )
-    synthesizer_llm = get_synthesizer_llm()
+    synthesizer_llm = llm or get_synthesizer_llm()
     REFUSAL_MESSAGE = "I can only answer questions about AAPL/MSFT SEC 10-K filings, based on the retrieved context."
 
     system_prompt = f"""You are an expert financial analyst assistant specializing in SEC 10-K filings.
@@ -105,9 +105,20 @@ def synthesize_financial_answer(query_str: str, index):
     ]
 
     response = synthesizer_llm.chat(messages)
-    answer_text = response.message.content
+    return response.message.content
+
+
+# Full pipeline that also returns the retrieved nodes, so callers (the eval harness) can inspect retrieval
+def answer_query(query_str: str, index):
+    nodes, filters = route_query_with_llm(query_str, index)
+    answer_text = generate_answer(query_str, nodes)
     print("\n--- Final Synthesized Financial Answer ---")
     print(answer_text)
+    return answer_text, filters, nodes
+
+
+def synthesize_financial_answer(query_str: str, index):
+    answer_text, filters, _ = answer_query(query_str, index)
     return answer_text, filters
 
 if __name__ == "__main__":

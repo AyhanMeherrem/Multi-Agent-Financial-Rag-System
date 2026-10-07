@@ -59,8 +59,9 @@ def get_sec_retriever(index: VectorStoreIndex, company:str=None, year:str=None, 
     metadata_filters = construct_sec_filters(company, year, section)
     return VectorIndexRetriever(index=index, similarity_top_k=top_k, filters=metadata_filters)
 
-def route_query_with_llm(query_string: str, index: VectorStoreIndex):
-    llm = get_router_llm()
+# llm can be passed in (the eval harness passes a cached, temperature 0 client); the app uses the default
+def extract_filters(query_string: str, llm=None) -> dict:
+    llm = llm or get_router_llm()
 
     system_prompt = """You are an SEC 10-K query router agent.
         Extract metadata entities from the user's question:
@@ -102,7 +103,10 @@ def route_query_with_llm(query_string: str, index: VectorStoreIndex):
     else:
         filter_dict = {}
 
-    filter_dict = sanitize_filter_dict(filter_dict)
+    return sanitize_filter_dict(filter_dict)
+
+
+def retrieve_nodes(query_string: str, index: VectorStoreIndex, filter_dict: dict) -> list:
     companies = filter_dict["companies"] or [None]
     year = filter_dict["year"]
     section = filter_dict["section"]
@@ -117,7 +121,12 @@ def route_query_with_llm(query_string: str, index: VectorStoreIndex):
             fallback_retriever = get_sec_retriever(index, company=company, year=year, section=None, top_k=5)
             all_nodes.extend(fallback_retriever.retrieve(query_string))
 
-    return all_nodes, filter_dict
+    return all_nodes
+
+
+def route_query_with_llm(query_string: str, index: VectorStoreIndex):
+    filter_dict = extract_filters(query_string)
+    return retrieve_nodes(query_string, index, filter_dict), filter_dict
 
 
 """"""""""""""""""""""""""""""""""""""""HELPER TEST FUNCTION """""""""""""""""
