@@ -222,3 +222,7 @@ AGENTS.md
 .vscode/
 data/
 sec_edgar_filings/
+
+# Eval harness: cached LLM outputs and ad-hoc runs (named results such as baseline are kept)
+eval/.cache/
+eval/results/run_*
