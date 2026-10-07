@@ -1,8 +1,10 @@
+import ipaddress
 import logging
 import os
 import secrets
 from contextlib import asynccontextmanager  # For lifespan event managing
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from fastapi.requests import Request
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -14,13 +16,29 @@ logger = logging.getLogger("uvicorn.error")
 
 
 TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "false").lower() == "true"
+BACKEND_API_KEY = os.getenv("BACKEND_API_KEY")
 
-# gets ip of user requesting (frontend or anything else) for rate limiting
+# The backend only ever talks to the Streamlit frontend, so the connection IP is the frontend's
+# and every end user would share one rate-limit bucket. The frontend therefore sends the end
+# user's IP in this header.
+END_USER_IP_HEADER = "x-end-user-ip"
+
+
+def has_valid_internal_key(request: Request) -> bool:
+    key = request.headers.get("x-internal-key")
+    return bool(BACKEND_API_KEY and key and secrets.compare_digest(key, BACKEND_API_KEY))
+
+
+# Rate-limit key. The forwarded end-user IP is only trusted when TRUST_PROXY_HEADERS is on AND the
+# request carries the internal key, i.e. it really came from our frontend. Anyone else could set
+# the header to a new value per request and bypass the limit, so they get their connection IP.
 def get_client_ip(request: Request) -> str:
-    if TRUST_PROXY_HEADERS:
-        forwarded_for = request.headers.get("x-forwarded-for")
-        if forwarded_for:
-            return forwarded_for.split(",")[0].strip()
+    if TRUST_PROXY_HEADERS and has_valid_internal_key(request):
+        forwarded = request.headers.get(END_USER_IP_HEADER, "").strip()
+        try:
+            return str(ipaddress.ip_address(forwarded))
+        except ValueError:
+            pass
     return request.client.host if request.client else "unknown"
 
 
@@ -55,11 +73,11 @@ async def lifespan(app:FastAPI):
 
 app = FastAPI(title='Financial RAG System', lifespan=lifespan)
 
+# Limiter state lives in this process's memory: it resets on restart and is not shared between
+# replicas. Fine for a single replica; multiple replicas would need a shared store.
 limiter = Limiter(key_func=get_client_ip)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-BACKEND_API_KEY = os.getenv("BACKEND_API_KEY")
 
 
 def verify_internal_key(x_internal_key: str | None = Header(None)):
@@ -71,12 +89,20 @@ def verify_internal_key(x_internal_key: str | None = Header(None)):
         raise HTTPException(status_code=401, detail="Invalid or missing internal key.")
 
 
+# No auth and no rate limit: used by container health probes and for checking the app is up
+@app.get("/health")
+async def health(request: Request):
+    return {"status": "ok", "index_loaded": getattr(request.app.state, "index", None) is not None}
+
+
 @app.post("/query", response_model=AgentResponse, dependencies=[Depends(verify_internal_key)])
 @limiter.limit("10/minute")
 async def financial_query(request: Request, body: QueryRequest):
     index = request.app.state.index
     try:
-        final_answer, filters = synthesize_financial_answer(body.query, index)
+        # The pipeline is blocking (Groq HTTP calls, CPU embedding, local Qdrant). Running it in
+        # a worker thread keeps the event loop free for other requests such as /health.
+        final_answer, filters = await run_in_threadpool(synthesize_financial_answer, body.query, index)
     except Exception:
         # catch any error during synthesis and return 502 Bad Gateway 
         logger.exception("financial_query failed")
