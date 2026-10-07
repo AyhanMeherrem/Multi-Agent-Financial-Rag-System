@@ -218,7 +218,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-AGENTS.md
 .vscode/
 data/
 sec_edgar_filings/
