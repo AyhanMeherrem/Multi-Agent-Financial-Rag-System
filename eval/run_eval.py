@@ -5,6 +5,7 @@
 #   python -m eval.run_eval --limit 5 --category numeric,comparison
 #   python -m eval.run_eval --no-synth           # router + retrieval only, no synthesizer calls
 #   python -m eval.run_eval --name baseline      # writes eval/results/baseline.json and baseline.md
+#   python -m eval.run_eval --refresh-cache      # ignore cached LLM answers (to measure latency)
 #
 # LLM calls use temperature 0 and are cached on disk in eval/.cache, so re-runs of unchanged
 # prompts cost nothing. Synthesis metrics still carry some noise: temperature 0 does not make
@@ -35,8 +36,9 @@ class RateLimitStop(Exception):
 class CachedChatLLM:
     # Wraps a LlamaIndex LLM: same .chat(messages) interface, but answers are cached on disk
     # by (model, settings, messages) and 429 responses are retried with exponential backoff.
-    def __init__(self, llm):
+    def __init__(self, llm, refresh: bool = False):
         self.llm = llm
+        self.refresh = refresh  # ignore cached answers (still writes them), e.g. to measure latency
         self.last_call_cached = False
         self.last_wait_seconds = 0.0  # time spent sleeping on 429s, subtracted from latency
 
@@ -52,7 +54,7 @@ class CachedChatLLM:
     def chat(self, messages):
         path = os.path.join(CACHE_DIR, self._key(messages) + ".json")
         self.last_wait_seconds = 0.0
-        if os.path.exists(path):
+        if os.path.exists(path) and not self.refresh:
             with open(path, encoding="utf-8") as f:
                 content = json.load(f)["content"]
             self.last_call_cached = True
@@ -84,11 +86,11 @@ class CachedChatLLM:
         return response
 
 
-def eval_llm(factory) -> CachedChatLLM:
+def eval_llm(factory, refresh: bool = False) -> CachedChatLLM:
     llm = factory()
     llm.temperature = 0.0
     llm.max_retries = 0  # retries are handled by CachedChatLLM
-    return CachedChatLLM(llm)
+    return CachedChatLLM(llm, refresh)
 
 
 def git_revision() -> str:
@@ -100,14 +102,17 @@ def git_revision() -> str:
         return "unknown"
 
 
-def score_item(item: dict, filters: dict, nodes: list, answer) -> dict:
-    predicted_companies = filters.get("companies") or []
-    predicted_years = [filters["year"]] if filters.get("year") else []
-    predicted_sections = [filters["section"]] if filters.get("section") else []
+def score_item(item: dict, filters: dict, nodes: list, answer, indexed_companies) -> dict:
+    # Lists ("years", "sections"); results written by the old single-value router used "year"/"section"
+    predicted_years = filters.get("years") or ([filters["year"]] if filters.get("year") else [])
+    predicted_sections = filters.get("sections") or ([filters["section"]] if filters.get("section") else [])
     expected_sections = item["expected_sections"]
+    # Companies are compared on indexed tickers only: the router also reports non-indexed ones
+    # (e.g. GOOGL), whose exact ticker spelling does not matter; refusing them is scored separately
+    predicted_companies = {c for c in filters.get("companies") or [] if c in indexed_companies}
 
     scores = {
-        "router_companies": set(predicted_companies) == set(item["expected_companies"]),
+        "router_companies": predicted_companies == set(item["expected_companies"]) & set(indexed_companies),
         "router_years": set(predicted_years) == set(item["expected_years"]),
         # Empty expected_sections means any section is acceptable
         "router_sections": not expected_sections or (bool(predicted_sections) and set(predicted_sections) <= set(expected_sections)),
@@ -228,6 +233,7 @@ def main():
     parser.add_argument("--category", help="comma-separated categories, e.g. numeric,comparison")
     parser.add_argument("--no-synth", action="store_true", help="skip the synthesizer (router and retrieval only)")
     parser.add_argument("--name", help="output name in eval/results (default: run_<timestamp>)")
+    parser.add_argument("--refresh-cache", action="store_true", help="call the LLMs even when a cached answer exists")
     args = parser.parse_args()
 
     with open(GOLDEN_SET, encoding="utf-8") as f:
@@ -239,13 +245,15 @@ def main():
         items = items[: args.limit]
 
     # Imported here so --help works without loading the embedding model
-    from app.router.router_agent import extract_filters, get_router_llm, load_index_from_qdrant, retrieve_nodes
+    from app.router.router_agent import (extract_filters, filters_for_response, get_catalog, get_router_llm,
+                                         load_index_from_qdrant, retrieve_nodes, unsupported_answer)
     from app.synthesizer.synthesizer_agent import generate_answer, get_synthesizer_llm
 
-    router_llm = eval_llm(get_router_llm)
-    synth_llm = None if args.no_synth else eval_llm(get_synthesizer_llm)
+    router_llm = eval_llm(get_router_llm, args.refresh_cache)
+    synth_llm = None if args.no_synth else eval_llm(get_synthesizer_llm, args.refresh_cache)
     print(f"Loading index and embedding model, then running {len(items)} questions...")
     index = load_index_from_qdrant()
+    catalog = get_catalog(index)
 
     results, stopped = [], None
     try:
@@ -255,33 +263,41 @@ def main():
                    "latency_ms": {}, "cached": {}}
             try:
                 start = time.perf_counter()
-                filters = extract_filters(item["question"], llm=router_llm)
+                decision = extract_filters(item["question"], catalog, llm=router_llm)
                 t_router = time.perf_counter()
                 router_wait = router_llm.last_wait_seconds
-                nodes = retrieve_nodes(item["question"], index, filters)
+                filters = filters_for_response(decision)
+                # Same short-circuit as answer_query(): no retrieval or synthesis for these
+                fixed_answer = unsupported_answer(decision, catalog)
+                nodes = [] if fixed_answer else retrieve_nodes(item["question"], index, decision, catalog)
                 t_retrieval = time.perf_counter()
-                answer = generate_answer(item["question"], nodes, llm=synth_llm) if synth_llm else None
+                synthesized = bool(synth_llm) and not fixed_answer
+                if fixed_answer:
+                    answer = fixed_answer if synth_llm else None
+                else:
+                    answer = generate_answer(item["question"], nodes, llm=synth_llm) if synth_llm else None
                 t_end = time.perf_counter()
-                synth_wait = synth_llm.last_wait_seconds if synth_llm else 0.0
+                synth_wait = synth_llm.last_wait_seconds if synthesized else 0.0
 
                 # Rate-limit sleeps are a property of the eval's API quota, not of the pipeline
                 row["latency_ms"] = {
                     "router": (t_router - start - router_wait) * 1000,
                     "retrieval": (t_retrieval - t_router) * 1000,
-                    "synthesis": (t_end - t_retrieval - synth_wait) * 1000 if synth_llm else None,
+                    "synthesis": (t_end - t_retrieval - synth_wait) * 1000 if synthesized else None,
                     "total": (t_end - start - router_wait - synth_wait) * 1000,
                 }
                 row["rate_limit_wait_ms"] = (router_wait + synth_wait) * 1000
                 row["cached"] = {"router": router_llm.last_call_cached,
-                                 "synthesis": bool(synth_llm and synth_llm.last_call_cached)}
+                                 "synthesis": synthesized and synth_llm.last_call_cached}
                 row["cached"]["total"] = row["cached"]["router"] or row["cached"]["synthesis"]
                 row["filters"] = filters
+                row["fixed_answer"] = bool(fixed_answer)
                 row["retrieved_k"] = len(nodes)
                 row["retrieved"] = [{"company": x.node.metadata.get("company"), "year": x.node.metadata.get("year"),
                                      "section": x.node.metadata.get("section"), "score": round(x.score or 0.0, 4),
                                      "text": x.node.text[:300]} for x in nodes]
                 row["answer"] = answer
-                row["scores"] = score_item(item, filters, nodes, answer)
+                row["scores"] = score_item(item, filters, nodes, answer, catalog.companies)
             except RateLimitStop as e:
                 stopped = str(e)
                 break

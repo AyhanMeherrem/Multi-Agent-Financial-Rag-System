@@ -4,7 +4,8 @@ import os
 from dotenv import load_dotenv
 from llama_index.core.llms import ChatMessage, MessageRole
 from llama_index.llms.groq import Groq
-from app.router.router_agent import route_query_with_llm
+from app.router.router_agent import (extract_filters, filters_for_response, get_catalog, retrieve_nodes,
+                                     unsupported_answer)
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -68,7 +69,15 @@ def generate_answer(query_str: str, nodes: list, llm=None) -> str:
 
 # Full pipeline that also returns the retrieved nodes, so callers (the eval harness) can inspect retrieval
 def answer_query(query_str: str, index):
-    nodes, filters = route_query_with_llm(query_str, index)
+    catalog = get_catalog(index)
+    decision = extract_filters(query_str, catalog)
+    filters = filters_for_response(decision)
+    # Off-topic questions and questions about companies or years that are not indexed get a fixed
+    # answer instead of an LLM answer built from unrelated chunks
+    fixed_answer = unsupported_answer(decision, catalog)
+    if fixed_answer:
+        return fixed_answer, {**filters, "fixed_answer": True}, []
+    nodes = retrieve_nodes(query_str, index, decision, catalog)
     answer_text = generate_answer(query_str, nodes)
     logger.debug("Filters %s, answer: %s", filters, answer_text)
     return answer_text, filters, nodes

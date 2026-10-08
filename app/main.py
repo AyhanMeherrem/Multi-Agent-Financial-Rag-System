@@ -9,7 +9,7 @@ from fastapi.requests import Request
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from app.router.router_agent import load_index_from_qdrant
+from app.router.router_agent import get_catalog, load_index_from_qdrant
 from app.synthesizer.synthesizer_agent import synthesize_financial_answer
 
 logger = logging.getLogger("uvicorn.error")
@@ -48,7 +48,8 @@ class QueryRequest(BaseModel):
 class AgentResponse(BaseModel):
     answer : str
     companies: list[str] | None =None
-    year : str | None = None
+    year : str | None = None  # set when the question is about exactly one fiscal year
+    years: list[str] | None = None
     source_urls: dict[str, str] | None = None
 
 # just building visualization for pdfs, it returns url's under answer box
@@ -68,6 +69,7 @@ def build_edgar_source_urls(companies: list[str] | None, year: str | None) -> di
 @asynccontextmanager
 async def lifespan(app:FastAPI):
     app.state.index = load_index_from_qdrant() # runs only one time before backend starting
+    get_catalog(app.state.index)  # read the indexed companies/years/sections once, up front
     yield
     # Do nothing special for shut down
 
@@ -109,9 +111,13 @@ async def financial_query(request: Request, body: QueryRequest):
         raise HTTPException(status_code=502, detail="Failed to generate an answer. Please try again.")
     companies = filters.get("companies")
     year = filters.get("year")
+    # Only link filings that are actually indexed (the router also reports non-indexed tickers), and
+    # none at all when the answer is a fixed "not covered" or "out of scope" message
+    indexed = [] if filters.get("fixed_answer") else [c for c in companies or [] if c in get_catalog(index).companies]
     return AgentResponse(
         answer=final_answer,
         companies=companies,
         year=year,
-        source_urls=build_edgar_source_urls(companies, year),
+        years=filters.get("years"),
+        source_urls=build_edgar_source_urls(indexed, year),
     )

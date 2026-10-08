@@ -131,7 +131,7 @@ elif isGenerateClicked:
 
         badge_cols = st.columns(2)
         badge_cols[0].metric("Companies", ", ".join(result.get("companies") or []) or "—")
-        badge_cols[1].metric("Year", result.get("year") or "—")
+        badge_cols[1].metric("Year", ", ".join(result.get("years") or []) or result.get("year") or "—")
 
         source_urls = result.get("source_urls")
         if source_urls:
