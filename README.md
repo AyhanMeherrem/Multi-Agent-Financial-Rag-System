@@ -4,6 +4,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-005571?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![Azure Container Apps](https://img.shields.io/badge/Azure_Container_Apps-0078D4)](https://azure.microsoft.com/en-us/products/container-apps)
+[![OpenRouter](https://img.shields.io/badge/OpenRouter-gpt--oss-6566F1)](https://openrouter.ai/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Ask questions about the 10-K filings of **Apple, Microsoft, NVIDIA, Alphabet, Amazon and Meta** (fiscal 2024 and 2025), including cross-company and year-over-year comparisons, and get answers with inline citations that link to the cited passage on sec.gov.
@@ -14,7 +15,7 @@ Ask questions about the 10-K filings of **Apple, Microsoft, NVIDIA, Alphabet, Am
 
 ## Demo
 
-Three real queries against the live deployment: a single company question, a cross company comparison, and a prompt injection attempt the synthesizer correctly refuses.
+Three real queries against the live deployment: a single company question, a cross company comparison, and a prompt injection attempt the synthesizer correctly refuses. (Recorded with the earlier two-company version; the current site covers six companies and has a new interface.)
 
 https://github.com/user-attachments/assets/74c4eb71-4ae1-4500-bb0f-44a9a79ffbaf
 
@@ -84,6 +85,7 @@ Full results per step are in `eval/results/`.
 - Found that the HTML parser silently dropped all text inside iXBRL tags, which is where the notes to the financial statements and the 2025 cybersecurity disclosures live. Fixing it grew the financial statements section of each filing 3.5 to 7.5 times and brought every golden-set evidence passage into the index.
 - Rebuilt chunking after measuring that half of the chunks were fragments under 50 tokens (median 45 → 224 tokens).
 - Rewrote the router to handle several years and sections in one question; two-year questions went from 0 to 100% correctly routed.
+- Moved the models from Groq's free tier (8,000 tokens per minute, about one question per minute) to OpenRouter with a prepaid limit, pinned to the fastest hosts after measuring that the default cheapest routing made the router alone take up to 7 seconds. Questions now take 2 to 5 seconds and cost about $0.001.
 - Added automatic parse checks (every tagged XBRL figure must appear in the chunks) when going from two to six companies. They caught Amazon's item headings laid out as tables and NVIDIA's financial statements living in Item 15 instead of Item 8.
 
 ## Limitations and next steps
