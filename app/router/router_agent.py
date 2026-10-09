@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from llama_index.core import VectorStoreIndex
 from llama_index.core.llms import ChatMessage, MessageRole
 from llama_index.core.retrievers import VectorIndexRetriever
-from llama_index.core.schema import QueryBundle
+from llama_index.core.schema import NodeWithScore, QueryBundle
 from llama_index.core.vector_stores import ExactMatchFilter, MetadataFilters
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.qdrant import QdrantVectorStore
@@ -18,6 +18,7 @@ from qdrant_client import QdrantClient
 
 from app.llm_errors import chat
 from app.llm_provider import get_llm
+from app.router.keyword_search import KeywordIndex
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -26,14 +27,21 @@ COLLECTION_NAME = "financial_filings"
 TOP_K_PER_COMBINATION = 8
 # Primary financial statements searched separately for each filing, see retrieve_nodes
 TOP_K_STATEMENTS = 3
+# Vector and keyword (BM25) search results are merged with reciprocal rank fusion: a chunk scores
+# 1 / (RRF_K + rank) in each list it appears in, so chunks ranked high by both methods come first.
+# 60 is the constant from the original RRF paper; it keeps one list's top hit from dominating.
+HYBRID_SEARCH = True
+RRF_K = 60
 # Captions of the primary statements (not the notes), e.g. "CONSOLIDATED STATEMENTS OF OPERATIONS"
 # (AAPL, AMZN), "Consolidated Statements of Income" (NVDA), "INCOME STATEMENTS" (MSFT)
 STATEMENT_CAPTION = re.compile(r"(consolidated )?(statements? of (operations|income|earnings|cash flows)|balance sheets?"
                                r"|income statements|cash flows statements)", re.IGNORECASE)
-# The synthesizer gets at most this much context: ~16k characters is ~4k tokens, which keeps each
-# question within Groq's free-tier limit of 8000 tokens per minute and keeps cost and latency low.
+# The synthesizer gets at most this much context, ~5k tokens. Keyword search favors longer chunks,
+# so at 16k characters two-year questions lost their last excerpts (measured: evidence found 0.80
+# at 16k, 0.86 at 20k, no further gain at 24k). With Groq's free tier (8000 tokens per minute)
+# this leaves little room; OpenRouter has no such limit.
 MAX_CONTEXT_CHUNKS = 16
-MAX_CONTEXT_CHARS = 16000
+MAX_CONTEXT_CHARS = 20000
 # Each company and year is a separate search sharing that context, so more than three companies
 # (six filings over two years) would leave about one excerpt per filing
 MAX_COMPANIES_PER_QUESTION = 3
@@ -64,6 +72,7 @@ class IndexCatalog:
     filings: tuple = ()  # every indexed (company, year)
     # {(company, year): node ids of the income statement, balance sheet and cash flow statement chunks}
     statements: dict = field(default_factory=dict, hash=False, compare=False)
+    keyword_index: object = field(default=None, hash=False, compare=False)  # BM25 over all chunks
 
 
 _catalog_cache: dict = {}
@@ -89,6 +98,7 @@ def get_catalog(index: VectorStoreIndex) -> IndexCatalog:
                 if s == "Item 15" and n >= 20 and chunks[(c, y, "Item 8")] <= 2),
             filings=tuple(sorted({(c, y) for c, y, _ in chunks if c and y and y.isdigit()})),
             statements=find_statements(points),
+            keyword_index=KeywordIndex(points) if HYBRID_SEARCH else None,
         )
     return _catalog_cache[key]
 
@@ -285,7 +295,15 @@ def retrieve_nodes(query_string: str, index: VectorStoreIndex, decision: RouterD
     bundle = QueryBundle(query_str=query_string, embedding=index._embed_model.get_query_embedding(query_string))
     combinations = [(c, y, "Item 15" if s == "Item 8" and (c, y) in catalog.financials_in_item_15 else s)
                     for c, y, s in product(companies, years, sections)]
-    per_combination = [get_sec_retriever(index, c, y, s).retrieve(bundle) for c, y, s in combinations]
+    keywords = catalog.keyword_index
+
+    def search(company, year, section, top_k=TOP_K_PER_COMBINATION, node_ids=None):
+        dense = get_sec_retriever(index, company, year, section, top_k=top_k, node_ids=node_ids).retrieve(bundle)
+        if keywords is None:
+            return dense
+        return fuse(dense, keywords.search(query_string, company, year, section, top_k=top_k, node_ids=node_ids))
+
+    per_combination = [search(c, y, s) for c, y, s in combinations]
     # Headline figures (revenue, net income, EPS, cash flow) are in the primary statements, but in a
     # large Item 8 those number-heavy tables rank below the notes that mention the same items
     # (measured: Alphabet's income statement was not in the top 20). So for every filing whose
@@ -293,8 +311,7 @@ def retrieve_nodes(query_string: str, index: VectorStoreIndex, decision: RouterD
     # best matches come first.
     statement_filings = list(dict.fromkeys((c, y) for c, y, s in combinations
                                            if s in ("Item 8", "Item 15") and (c, y) in catalog.statements))
-    per_combination = [get_sec_retriever(index, c, y, None, top_k=TOP_K_STATEMENTS,
-                                         node_ids=catalog.statements[(c, y)]).retrieve(bundle)
+    per_combination = [search(c, y, None, top_k=TOP_K_STATEMENTS, node_ids=catalog.statements[(c, y)])
                        for c, y in statement_filings] + per_combination
 
     # Take results rank by rank across combinations (every combination's best hit first) so that one
@@ -314,6 +331,19 @@ def retrieve_nodes(query_string: str, index: VectorStoreIndex, decision: RouterD
             seen.update((node.node.node_id, node.node.text))
             chars += len(node.node.text)
     return sorted(selected, key=lambda n: n.score or 0.0, reverse=True)
+
+
+def fuse(*ranked_lists) -> list:
+    # Reciprocal rank fusion: the fused score replaces the original ones, which are not comparable
+    # (cosine similarity vs BM25), and is what the final ordering of the context uses
+    scores, nodes = {}, {}
+    for results in ranked_lists:
+        for rank, result in enumerate(results, start=1):
+            node_id = result.node.node_id
+            scores[node_id] = scores.get(node_id, 0.0) + 1.0 / (RRF_K + rank)
+            nodes.setdefault(node_id, result.node)
+    return [NodeWithScore(node=nodes[node_id], score=score)
+            for node_id, score in sorted(scores.items(), key=lambda item: item[1], reverse=True)]
 
 
 def filters_for_response(decision: RouterDecision) -> dict:
