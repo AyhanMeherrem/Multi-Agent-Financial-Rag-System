@@ -3,7 +3,6 @@
 
 import json
 import sys
-sys.stdout.reconfigure(encoding='utf-8')
 
 import numpy as np
 import pandas as pd
@@ -11,7 +10,8 @@ import plotly.express as px
 from sklearn.decomposition import PCA
 from app.router.router_agent import load_index_from_qdrant
 
-print("Connecting to Qdrant Database & Fetching 2,146 Vector Embeddings...")
+sys.stdout.reconfigure(encoding='utf-8')
+print("Connecting to Qdrant Database & Fetching Vector Embeddings...")
 index = load_index_from_qdrant()
 qdrant_client = index.storage_context.vector_store.client
 
