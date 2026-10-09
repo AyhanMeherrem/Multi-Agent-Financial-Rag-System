@@ -128,3 +128,22 @@ def test_catalog_lists_indexed_companies_and_years(client, monkeypatch, catalog)
     assert body == {"companies": [{"ticker": "AAPL", "name": "Apple", "years": ["2024", "2025"]},
                                   {"ticker": "NVDA", "name": "NVIDIA", "years": ["2025"]}],
                     "max_companies_per_question": 3}
+
+
+def test_daily_limit_counts_only_new_answers(client, monkeypatch):
+    client.app.state.daily_limit.limit = 2
+    for query in ["first", "first", "second"]:  # the repeated question comes from the cache
+        assert client.post("/query", json={"query": query}, headers=HEADERS).status_code == 200
+    response = client.post("/query", json={"query": "third"}, headers=HEADERS)
+    assert response.status_code == 429 and "daily question limit" in response.json()["detail"]
+    assert client.post("/query", json={"query": "first"}, headers=HEADERS).status_code == 200
+
+
+def test_failed_requests_do_not_use_the_daily_limit(client, monkeypatch):
+    client.app.state.daily_limit.limit = 1
+    def failing(query, index):
+        raise LLMUnavailable("down")
+    monkeypatch.setattr(main, "answer_query", failing)
+    assert client.post("/query", json={"query": "q"}, headers=HEADERS).status_code == 503
+    monkeypatch.setattr(main, "answer_query", fake_answer_query)
+    assert client.post("/query", json={"query": "q"}, headers=HEADERS).status_code == 200

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.answer_cache import AnswerCache
+from app.daily_limit import DailyLimit
 from app.llm_errors import LLMRateLimited, LLMUnavailable
 from app.router.router_agent import COMPANY_NAMES, MAX_COMPANIES_PER_QUESTION, get_catalog, load_index_from_qdrant
 from app.synthesizer.synthesizer_agent import answer_query, build_sources
@@ -19,6 +20,8 @@ logger = logging.getLogger("uvicorn.error")
 
 TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "false").lower() == "true"
 BACKEND_API_KEY = os.getenv("BACKEND_API_KEY")
+# New answers per UTC day across all users (0 = no limit), see app/daily_limit.py
+DAILY_ANSWER_LIMIT = int(os.getenv("DAILY_ANSWER_LIMIT", "50"))
 
 # The backend only ever talks to the Streamlit frontend, so the connection IP is the frontend's
 # and every end user would share one rate-limit bucket. The frontend therefore sends the end
@@ -82,6 +85,7 @@ async def lifespan(app:FastAPI):
     app.state.index = load_index_from_qdrant() # runs only one time before backend starting
     get_catalog(app.state.index)  # read the indexed companies/years/sections once, up front
     app.state.answer_cache = AnswerCache()
+    app.state.daily_limit = DailyLimit(DAILY_ANSWER_LIMIT)
     yield
     # Do nothing special for shut down
 
@@ -140,19 +144,25 @@ async def financial_query(request: Request, body: QueryRequest):
     cache = request.app.state.answer_cache
     cached = cache.get(body.query)
     if cached is not None:
+        logger.info("Answered from cache")
         return cached.model_copy(update={"cached": True})
+    daily_limit = request.app.state.daily_limit
+    if not daily_limit.try_acquire():
+        raise HTTPException(status_code=429, detail="The daily question limit has been reached. Please try again "
+                                                    "tomorrow; the example questions still work.")
     try:
         # The pipeline is blocking (Groq HTTP calls, CPU embedding, local Qdrant). Running it in
         # a worker thread keeps the event loop free for other requests such as /health.
         final_answer, filters, nodes = await run_in_threadpool(answer_query, body.query, index)
-    except LLMRateLimited:
-        logger.warning("Groq rate limit reached")
-        raise HTTPException(status_code=429, detail="The language model is busy. Please try again in a minute.")
-    except LLMUnavailable:
-        logger.exception("Groq unavailable")
-        raise HTTPException(status_code=503, detail="The language model service is unavailable. Please try again shortly.")
-    except Exception:
-        # catch any error during synthesis and return 502 Bad Gateway 
+    except Exception as error:
+        daily_limit.release()  # no answer was produced, so it does not count
+        if isinstance(error, LLMRateLimited):
+            logger.warning("Groq rate limit reached")
+            raise HTTPException(status_code=429, detail="The language model is busy. Please try again in a minute.")
+        if isinstance(error, LLMUnavailable):
+            logger.exception("Groq unavailable")
+            raise HTTPException(status_code=503, detail="The language model service is unavailable. Please try again shortly.")
+        # catch any error during synthesis and return 502 Bad Gateway
         logger.exception("financial_query failed")
         raise HTTPException(status_code=502, detail="Failed to generate an answer. Please try again.")
     companies = filters.get("companies")
@@ -170,4 +180,5 @@ async def financial_query(request: Request, body: QueryRequest):
     )
     # Errors raise above, so only real answers are cached
     cache.put(body.query, response)
+    logger.info("New answer (%d of %d today)", daily_limit.used, daily_limit.limit)
     return response
