@@ -1,12 +1,11 @@
+# Run from the repo root: python -m app.indexing.vector_store
 import os
 import shutil
-import sys
-sys.path.append(".")
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from qdrant_client import QdrantClient
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from llama_index.core import StorageContext, VectorStoreIndex
-from app.parsing.parse_filings import parse_all_filings
+from app.parsing.parse_filings import get_tokenizer, parse_all_filings
 from llama_index.core.node_parser import SentenceSplitter   # To apply subchunking if we have a paragraph which has >512 tokens which is limit of structural chunking
 
 QDRANT_DB_PATH = "./data/qdrant_db"
@@ -28,12 +27,16 @@ def build_index() -> VectorStoreIndex:
         storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
         raw_nodes = parse_all_filings()
-        print(f"Extracted {len(raw_nodes)} raw section nodes.")
+        print(f"Extracted {len(raw_nodes)} chunks from the parser.")
 
-        # Sub Chunking if it has more tahn 512 token
-        splitter = SentenceSplitter(chunk_size=512, chunk_overlap=50)  # 50 token overlap makes easier to catch meanings
+        # The parser already builds ~450-token chunks; this only splits the few oversized ones. Sizes are
+        # counted with bge's own tokenizer, since bge truncates input at 512 of its tokens (the embedded
+        # text also includes the company/year/section metadata, hence 480).
+        tokenizer = get_tokenizer()
+        splitter = SentenceSplitter(chunk_size=480, chunk_overlap=50,  # 50 token overlap makes easier to catch meanings
+                                    tokenizer=lambda text: tokenizer.encode(text, add_special_tokens=False))
         nodes = splitter.get_nodes_from_documents(raw_nodes)
-        print(f"Refined into {len(nodes)} 512 token chunks")
+        print(f"Split into {len(nodes)} chunks of at most 480 tokens")
 
         index = VectorStoreIndex(
             nodes=nodes,

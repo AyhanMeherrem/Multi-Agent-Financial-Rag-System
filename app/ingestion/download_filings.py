@@ -1,14 +1,26 @@
+# Run from the repo root: python -m app.ingestion.download_filings
 import os
+from dotenv import load_dotenv
 # pyrefly: ignore [missing-import]
 from sec_edgar_downloader import Downloader
+
+load_dotenv()
 
 
 def download_all_filings():
 
-    # Our company infos to match Sec Edgars policies
+    # SEC's fair-access policy requires a real name and contact email in the User-Agent of every
+    # request, so they come from the environment instead of being hardcoded placeholders
+    name = os.getenv("SEC_USER_AGENT_NAME")
+    email = os.getenv("SEC_USER_EMAIL")
+    if not name or not email:
+        raise SystemExit(
+            "Set SEC_USER_AGENT_NAME and SEC_USER_EMAIL (your name and contact email, see .env.example) "
+            "before downloading from SEC EDGAR."
+        )
     downloader = Downloader(
-        company_name="MultiAgentFinancialRAG",
-        email_address="admin@financialrag.com",
+        company_name=name,
+        email_address=email,
         download_folder="./data/raw_filings"
     )
 

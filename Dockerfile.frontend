@@ -9,5 +9,7 @@ RUN useradd --create-home --shell /bin/false appuser
 USER appuser
 
 COPY --chown=appuser:appuser app/ui ./app/ui
+# Streamlit reads .streamlit/config.toml from the working directory (pins the dark theme)
+COPY --chown=appuser:appuser .streamlit/config.toml ./.streamlit/config.toml
 EXPOSE 8501
 CMD ["streamlit", "run", "app/ui/streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]

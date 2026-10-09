@@ -1,14 +1,17 @@
-AGENTS.md
-myNotes.md
+# Local notes and docs are not needed in any image
+*.md
+# Hidden files and folders (.env, .git, .venv, editor and tool settings)
+.*
+# ...except the Streamlit theme config, which the frontend image needs
+!.streamlit/config.toml
 .env
 *.log
 .git
 sec_edgar_filings/
 data/raw_filings/
 data/qdrant_db/.lock
+data/qdrant_db.bak_*/
 __pycache__/
 *.pyc
 .venv
 venv/
-CLAUDE.md
-

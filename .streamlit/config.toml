@@ -1,0 +1,6 @@
+# The page CSS paints a dark background, so the theme must be dark too. Without this,
+# Streamlit follows the visitor's OS theme and light-mode visitors get dark text on a
+# dark background.
+[theme]
+base = "dark"
+primaryColor = "#5b8cff"
