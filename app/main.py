@@ -153,19 +153,19 @@ async def financial_query(request: Request, body: QueryRequest):
         raise HTTPException(status_code=429, detail="The daily question limit has been reached. Please try again "
                                                     "tomorrow; the example questions still work.")
     try:
-        # The pipeline is blocking (Groq HTTP calls, CPU embedding, local Qdrant). Running it in
+        # The pipeline is blocking (LLM HTTP calls, CPU embedding, local Qdrant). Running it in
         # a worker thread keeps the event loop free for other requests such as /health.
         final_answer, filters, nodes = await run_in_threadpool(answer_query, body.query, index)
     except Exception as error:
         daily_limit.release()  # no answer was produced, so it does not count
         if isinstance(error, LLMRateLimited):
-            logger.warning("Groq rate limit reached: %s", error)
+            logger.warning("LLM rate limit reached: %s", error)
             if error.daily:
                 raise HTTPException(status_code=429, detail="Today's free model quota is used up. Please try again "
                                                             "tomorrow; the example questions still work.")
             raise HTTPException(status_code=429, detail="The language model is busy. Please try again in a minute.")
         if isinstance(error, LLMUnavailable):
-            logger.exception("Groq unavailable")
+            logger.exception("LLM provider unavailable")
             raise HTTPException(status_code=503, detail="The language model service is unavailable. Please try again shortly.")
         # catch any error during synthesis and return 502 Bad Gateway
         logger.exception("financial_query failed")

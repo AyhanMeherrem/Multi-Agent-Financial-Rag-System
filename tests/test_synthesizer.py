@@ -1,12 +1,12 @@
 from app.synthesizer.synthesizer_agent import (REFUSAL_MESSAGE, build_sources, build_system_prompt, clean_answer,
-                                               passage_url,
+                                               fiscal_year_note, passage_url,
                                                generate_answer)
 from tests.helpers import FakeLLM, make_node
 
 
 def test_prompt_fences_excerpts_with_source_labels():
     prompt = build_system_prompt([make_node("Total net sales | 391,035", company="AAPL", year="2024", section="Item 8")])
-    assert '<excerpt source="[AAPL | FY2024 | Item 8]" fiscal_year_end=' in prompt
+    assert '<excerpt source="[AAPL | FY2024 | Item 8]">' in prompt
     assert "<excerpts>" in prompt and "</excerpts>" in prompt
     assert REFUSAL_MESSAGE in prompt
 
@@ -89,3 +89,15 @@ def test_rate_limited_main_model_falls_back_to_the_smaller_one(monkeypatch, cata
     answer, filters, _ = synth.answer_query("Apple net sales 2024", index=None)
     assert used == [synth.SYNTHESIZER_MODEL, synth.FALLBACK_MODEL]
     assert answer.startswith("Net sales") and filters["fallback_model"] is True
+
+
+def test_fiscal_year_note_only_when_cited_companies_close_on_different_dates():
+    nvda = make_node("Net income | 72,880", company="NVDA", year="2025", period_end_date="2025-01-26")
+    meta = make_node("Net income | 60,458", company="META", year="2025", period_end_date="2025-12-31")
+    googl = make_node("Net income | 132,170", company="GOOGL", year="2025", period_end_date="2025-12-31")
+    answer = "NVIDIA earned 72,880 [NVDA | FY2025 | Item 15] and Meta 60,458 [META | FY2025 | Item 8]."
+    assert fiscal_year_note(answer, [nvda, meta]) == ("Fiscal years end on different dates: META FY2025 ended "
+                                                       "December 31, 2025 · NVDA FY2025 ended January 26, 2025.")
+    same_end = "Alphabet 132,170 [GOOGL | FY2025 | Item 8], Meta 60,458 [META | FY2025 | Item 8]."
+    assert fiscal_year_note(same_end, [googl, meta]) is None
+    assert fiscal_year_note("Only [NVDA | FY2025 | Item 15].", [nvda]) is None

@@ -2,7 +2,7 @@ import re
 from collections import OrderedDict
 
 # In-memory cache of finished answers, so a repeated question (most often one of the example
-# questions in the UI) costs no Groq tokens. The index is loaded once at startup and never changes
+# questions in the UI) costs no model tokens. The index is loaded once at startup and never changes
 # while the process runs, so entries never go stale; a new index means a new image and a new
 # process, which starts with an empty cache. The cache is per process: it is lost on restart or
 # scale-to-zero and not shared between replicas.

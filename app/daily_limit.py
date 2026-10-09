@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 # A cap on new (uncached) answers per UTC day across all users. The per-IP rate limit stops one
 # visitor from flooding the API, but many requests spread over a day could still use up the
-# month's Groq spending limit in one day; this keeps the daily spend predictable. Cached answers
+# month's model spending limit in one day; this keeps the daily spend predictable. Cached answers
 # do not count. The count lives in this process, so it also resets when the backend restarts.
 
 

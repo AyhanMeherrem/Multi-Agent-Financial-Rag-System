@@ -1,8 +1,8 @@
-# Groq is called through LlamaIndex's OpenAI-compatible client. The Groq LLM objects use
-# max_retries=1: one quick retry rides out a short per-minute limit (the client waits for Groq's
-# retry-after when it is under a minute), while a daily limit fails at once instead of keeping the
-# visitor waiting for minutes. These app-level errors let the API answer with a clear 429 or 503
-# instead of a generic failure.
+# The models are called through LlamaIndex's OpenAI-compatible client (Groq or OpenRouter, see
+# app/llm_provider.py). The LLM objects use max_retries=1: one quick retry rides out a short
+# per-minute limit (the client waits for the provider's retry-after when it is under a minute),
+# while a daily limit fails at once instead of keeping the visitor waiting for minutes. These
+# app-level errors let the API answer with a clear 429 or 503 instead of a generic failure.
 import logging
 
 import openai
@@ -23,15 +23,17 @@ class LLMUnavailable(Exception):
 
 
 def log_usage(llm, response) -> None:
-    # Real token counts per call, to size the per-minute and per-day Groq limits
+    # Real token counts per call, to size rate limits and cost
     raw = getattr(response, "raw", None)
     usage = raw.get("usage") if isinstance(raw, dict) else getattr(raw, "usage", None)
     if usage is None:
         return
     def get(key):
         return usage.get(key) if isinstance(usage, dict) else getattr(usage, key, None)
-    logger.info("%s: %s prompt + %s completion tokens", getattr(llm, "model", "llm"),
-                get("prompt_tokens"), get("completion_tokens"))
+    # OpenRouter also says which host served the request
+    host = raw.get("provider") if isinstance(raw, dict) else getattr(raw, "provider", None)
+    logger.info("%s%s: %s prompt + %s completion tokens", getattr(llm, "model", "llm"),
+                f" via {host}" if host else "", get("prompt_tokens"), get("completion_tokens"))
 
 
 def chat(llm, messages):

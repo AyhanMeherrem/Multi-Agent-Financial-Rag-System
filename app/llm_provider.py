@@ -29,9 +29,13 @@ def get_llm(model: str, reasoning_effort: str, temperature: float | None = None,
 
     if llm_provider() == "openrouter":
         # OpenRouter takes the reasoning effort as a "reasoning" object and routes each request to one
-        # of several hosts; require_parameters keeps it to hosts that support every option sent here
-        # (JSON mode for the router). Options the OpenAI client does not know go in extra_body.
-        extra_body = {"reasoning": {"effort": reasoning_effort}, "provider": {"require_parameters": True}}
+        # of several hosts. By default it picks the cheapest, which was 2-7x slower (measured: the
+        # router took up to 7 s); Groq and Cerebras serve gpt-oss fastest, with the other hosts as a
+        # fallback. require_parameters keeps it to hosts that support every option sent here (JSON
+        # mode for the router). Options the OpenAI client does not know go in extra_body.
+        extra_body = {"reasoning": {"effort": reasoning_effort},
+                      "provider": {"order": ["groq", "cerebras"], "allow_fallbacks": True,
+                                   "require_parameters": True}}
         return OpenAILike(model=model, api_base=OPENROUTER_URL, api_key=require_key("OPENROUTER_API_KEY"),
                           is_chat_model=True, context_window=131072,
                           additional_kwargs={"extra_body": extra_body, **json_format}, **options)

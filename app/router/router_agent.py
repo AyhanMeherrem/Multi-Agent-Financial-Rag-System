@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "financial_filings"
 TOP_K_PER_COMBINATION = 8
-# The synthesizer gets at most this much context. Groq allows 8000 tokens per minute on this
-# key, and ~16k characters is ~4k tokens, which leaves room for the prompt and the answer.
+# The synthesizer gets at most this much context: ~16k characters is ~4k tokens, which keeps each
+# question within Groq's free-tier limit of 8000 tokens per minute and keeps cost and latency low.
 MAX_CONTEXT_CHUNKS = 16
 MAX_CONTEXT_CHARS = 16000
 # Each company and year is a separate search sharing that context, so more than three companies
