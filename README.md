@@ -6,7 +6,7 @@
 [![Azure Container Apps](https://img.shields.io/badge/Azure_Container_Apps-0078D4)](https://azure.microsoft.com/en-us/products/container-apps)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Ask questions about the **Apple** and **Microsoft** 10-K filings (fiscal 2024 and 2025), including cross-company and year-over-year comparisons, and get answers with inline citations to the filing sections they come from.
+Ask questions about the 10-K filings of **Apple, Microsoft, NVIDIA, Alphabet, Amazon and Meta** (fiscal 2024 and 2025), including cross-company and year-over-year comparisons, and get answers with inline citations that link to the cited passage on sec.gov.
 
 **Live demo:** https://financial-rag-frontend.graydesert-4f40e327.italynorth.azurecontainerapps.io
 
@@ -32,13 +32,15 @@ https://github.com/user-attachments/assets/24564cac-58de-4067-bc65-3c5c3a82c44d
 > Microsoft's total revenue for fiscal 2024 was **$245,122 million** [MSFT | FY2024 | Item 8].
 > Difference: $391,035 m − $245,122 m = **$145,913 million**; Apple's revenue is about **59.5% higher** (391,035 ÷ 245,122 ≈ 1.595).
 
-Each citation is also returned as a source with a link to the filing on sec.gov.
+Each citation is also returned as a source with a link that opens the filing on sec.gov at the cited table or paragraph.
 
 ## How it works
 
 ```mermaid
 flowchart LR
-    Q["Question"] --> R["Router<br/><i>gpt-oss-20b, JSON mode</i><br/>companies, years, sections"]
+    Q["Question"] --> C{"Answer cache"}
+    C -->|"asked before"| U
+    C --> R["Router<br/><i>gpt-oss-20b, JSON mode</i><br/>companies, years, sections"]
     R -->|"not indexed / off-topic"| X["Fixed answer"]
     R --> S["Filtered search in Qdrant<br/><i>bge-large-en-v1.5, one search per<br/>company / year / section</i>"]
     S --> A["Synthesizer<br/><i>gpt-oss-120b</i><br/>cited answer"]
@@ -49,25 +51,30 @@ flowchart LR
 
 - **Router:** a small model turns the question into a validated filter (companies, fiscal years, 10-K sections, in scope or not). Allowed values are read from the index, so questions about other companies or years get a clear "not in the indexed filings" answer instead of a wrong one.
 - **Retrieval:** Qdrant payload filters restrict the search to the matching filings and sections; comparisons search each company and year separately and merge the results so neither side crowds out the other.
-- **Synthesis:** a larger model answers only from the retrieved excerpts, cites every fact, shows the formula for computed differences and says what is missing when the filings do not contain the answer.
+- **Synthesis:** a larger model answers only from the retrieved excerpts, cites every fact, shows the formula for computed differences and says what is missing when the filings do not contain the answer. When companies with different fiscal year ends are compared, the answer notes the dates.
+- **Models:** both are open-weight gpt-oss models, served through OpenRouter (preferring Groq and Cerebras hosts for speed) or directly by Groq, chosen with `LLM_PROVIDER`.
 
 ## Results
 
-Measured on a 52-question golden set whose answers were checked against the raw filings (`eval/`), covering single figures, comparisons, two-year changes, narrative sections, unanswerable questions and prompt injection.
+Measured on a 62-question golden set whose answers were checked against the raw filings (`eval/`), covering single figures, comparisons, two-year changes, narrative sections, unanswerable questions and prompt injection. Baseline and the two-company column use the first 52 questions (Apple and Microsoft only).
 
-| Metric | Baseline | Final |
-|---|---|---|
-| Router: companies, years and sections all correct | 0.67 | 0.98 |
-| Numeric answers correct | 0.70 | 0.85 |
-| Answerable questions wrongly refused | 0.22 | 0.05 |
-| Answers with valid citations | n/a | 1.00 |
-| Unanswerable questions handled / injections resisted | 1.00 / 1.00 | 1.00 / 1.00 |
+| Metric | Baseline | 2 companies | 6 companies |
+|---|---|---|---|
+| Router: companies, years and sections all correct | 0.67 | 0.98 | 0.97 |
+| Evidence retrieved (hit@k) | 0.59 | 0.81 | 0.80 |
+| Numeric answers correct | 0.70 | 0.85 | 0.89 |
+| Answerable questions wrongly refused | 0.22 | 0.05 | 0.06 |
+| Answers with valid citations | n/a | 1.00 | 1.00 |
+| Unanswerable questions handled / injections resisted | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 1.00 |
+
+Going from two to six companies first dropped retrieval to 0.69: in large financial statement sections the number-heavy statements ranked below notes that mention the same items. Searching the primary statements of each filing separately, and skipping empty page-header tables, brought it back.
 
 Full results per step are in `eval/results/`.
 
 ## Design decisions
 
-- **Embedded Qdrant baked into the backend image:** the index is about 13 MB and only changes when filings are re-ingested, so no separate database service is needed. The image is rebuilt when the index changes.
+- **Embedded Qdrant baked into the backend image:** the index is about 50 MB and only changes when filings are re-ingested, so no separate database service is needed. The image is rebuilt when the index changes.
+- **Cost control:** repeated questions are answered from an in-memory cache, new answers are capped per day, and the model provider has a prepaid spending limit; a question costs about $0.001.
 - **Small model for routing, large model for answers:** routing is a short structured task on every question; answering needs careful reading of numbers across many excerpts.
 - **Filters at the vector-store level:** company, year and section are Qdrant payload filters, so a question only searches the filings it is about.
 - **Structure-aware chunking:** chunks follow the 10-K items, tables keep one row per line with their caption, and chunk sizes are counted with the embedding model's own tokenizer.
@@ -77,16 +84,18 @@ Full results per step are in `eval/results/`.
 - Found that the HTML parser silently dropped all text inside iXBRL tags, which is where the notes to the financial statements and the 2025 cybersecurity disclosures live. Fixing it grew the financial statements section of each filing 3.5 to 7.5 times and brought every golden-set evidence passage into the index.
 - Rebuilt chunking after measuring that half of the chunks were fragments under 50 tokens (median 45 → 224 tokens).
 - Rewrote the router to handle several years and sections in one question; two-year questions went from 0 to 100% correctly routed.
+- Added automatic parse checks (every tagged XBRL figure must appear in the chunks) when going from two to six companies. They caught Amazon's item headings laid out as tables and NVIDIA's financial statements living in Item 15 instead of Item 8.
 
 ## Limitations and next steps
 
-- Two companies and two filing years, 10-K only.
+- Six companies and two filing years, 10-K only; at most three companies per question so each one gets enough context.
+- Questions that name no company ("which company earned the most?") search all filings at once and are weaker.
 - Number-heavy tables sometimes rank below related notes; hybrid BM25 + dense retrieval is the next planned improvement.
 - The index and rate limiter live in the backend process, which suits a single replica.
 
 ## Running locally
 
-Requirements: Python 3.13, a [Groq API key](https://console.groq.com/), Docker (optional). About 2.6 GB of disk for the environment and embedding model, about 1.7 GB of RAM for the backend, and roughly 12 minutes on a laptop CPU to build the index.
+Requirements: Python 3.13, an [OpenRouter](https://openrouter.ai/keys) or [Groq](https://console.groq.com/) API key, Docker (optional). About 2.6 GB of disk for the environment and embedding model, about 1.7 GB of RAM for the backend, and roughly 45 minutes on a laptop CPU to build the index of 12 filings.
 
 ```bash
 pip install -r requirements-dev.txt        # requirements.txt alone is the backend runtime
@@ -105,10 +114,12 @@ Tests and evaluation: `pytest`, `ruff check .`, `python -m eval.run_eval --limit
 
 | Variable | Used by |
 |---|---|
-| `GROQ_API_KEY` | Backend (required) |
+| `LLM_PROVIDER` | Backend: `openrouter` or `groq` (default) |
+| `OPENROUTER_API_KEY` / `GROQ_API_KEY` | Backend, the key for the chosen provider |
 | `BACKEND_API_KEY` | Backend and frontend, shared secret for `/query` (required) |
 | `BACKEND_URL` | Frontend (default `http://127.0.0.1:8000/query`) |
 | `TRUST_PROXY_HEADERS` | Backend, set `true` behind the deployed frontend |
+| `DAILY_ANSWER_LIMIT` | Backend, new answers per day (default 50) |
 | `SEC_USER_AGENT_NAME`, `SEC_USER_EMAIL` | Downloading filings |
 | `EVAL_GROQ_API_KEY` | Evaluation only (optional) |
 
@@ -122,6 +133,8 @@ app/
   indexing/vector_store.py          embed chunks and build the Qdrant index
   router/router_agent.py            filter extraction and filtered retrieval
   synthesizer/synthesizer_agent.py  cited answers and sources
+  llm_provider.py                   OpenRouter or Groq client
+  answer_cache.py, daily_limit.py   cost control
   main.py                           FastAPI backend
   ui/streamlit_app.py               Streamlit frontend
   dev/phoenix_tools.py              Arize Phoenix tracing (local only)
@@ -139,12 +152,12 @@ curl -X POST http://127.0.0.1:8000/query -H "Content-Type: application/json" \
   -H "X-Internal-Key: $BACKEND_API_KEY" -d '{"query": "What were Apple'"'"'s total net sales in fiscal 2024?"}'
 ```
 
-Returns `answer`, `companies`, `year`, `years`, `source_urls` and `sources` (company, year, section, sec.gov URL, snippet). Errors: `401` bad key, `422` invalid query, `429` rate limited, `503` model provider unavailable. `GET /health` needs no key.
+Returns `answer`, `companies`, `year`, `years`, `sources` (company, year, section, sec.gov URL, a URL to the cited passage, snippet), `cached` and `fallback_model`. Errors: `401` bad key, `422` invalid query, `429` rate or daily limit, `503` model provider unavailable. `GET /catalog` lists the indexed companies and years; `GET /health` needs no key.
 
 ## Security
 
 - `/query` requires a shared internal key (constant-time comparison) and fails closed if none is configured; the backend has internal-only ingress.
-- Rate limit of 10 requests per minute per end user, using the user IP that the frontend forwards (trusted only with the internal key).
+- Rate limit of 10 requests per minute per end user, using the user IP that the frontend forwards (trusted only with the internal key), plus a daily cap on new answers across all users.
 - The question and the retrieved text are treated as untrusted data in the prompts, and off-topic or injection messages are stopped before retrieval; injection attempts are part of the evaluation set.
 - Answers are rendered as Markdown without raw HTML; containers run as a non-root user.
 
