@@ -69,9 +69,10 @@ def run_retrieval(monkeypatch, catalog, decision, results_by_filter):
     # results_by_filter: {(company, year, section): [NodeWithScore, ...]}
     calls = []
 
-    def fake_get_retriever(index, company, year, section, top_k=router.TOP_K_PER_COMBINATION):
-        calls.append((company, year, section))
-        return FakeRetriever(results_by_filter.get((company, year, section), []))
+    def fake_get_retriever(index, company, year, section, top_k=router.TOP_K_PER_COMBINATION, node_ids=None):
+        calls.append((company, year, section) if node_ids is None else ("statements", company, year))
+        key = (company, year, section) if node_ids is None else ("statements", company, year)
+        return FakeRetriever(results_by_filter.get(key, []))
 
     monkeypatch.setattr(router, "get_sec_retriever", fake_get_retriever)
     index = SimpleNamespace(_embed_model=SimpleNamespace(get_query_embedding=lambda q: [0.0]))
@@ -139,3 +140,37 @@ def test_at_most_three_companies_per_question(catalog):
 
 def test_ticker_aliases_map_to_indexed_tickers():
     assert RouterDecision(companies=["goog", "FB"]).companies == ["GOOGL", "META"]
+
+
+def test_statement_captions_exclude_notes():
+    for caption in ["CONSOLIDATED STATEMENTS OF OPERATIONS / (In millions)", "Consolidated Statements of Income",
+                    "ITEM 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA / INCOME STATEMENTS", "BALANCE SHEETS",
+                    "CASH FLOWS STATEMENTS", "CONSOLIDATED STATEMENTS OF CASH FLOWS / (in millions)"]:
+        assert router.is_statement_caption(caption), caption
+    for caption in ["Note 9 - Balance Sheet Components", "Table of Contents / Consolidated Statements of Cash Flows "
+                    "Reconciliation", "Note 2 – Revenue", "CONSOLIDATED STATEMENTS OF COMPREHENSIVE INCOME"]:
+        assert not router.is_statement_caption(caption), caption
+
+
+def test_financial_statements_are_searched_first_for_item_8(monkeypatch, catalog):
+    catalog = IndexCatalog(companies=("GOOGL",), years=("2024",), sections=catalog.sections,
+                           statements={("GOOGL", "2024"): ["income-statement-id"]})
+    statement = make_node("Table: CONSOLIDATED STATEMENTS OF INCOME\nNet income | 100,118", company="GOOGL", score=0.4,
+                          node_id="is")
+    note = make_node("Note 1 text about net income", company="GOOGL", score=0.9, node_id="note")
+    results = {("statements", "GOOGL", "2024"): [statement], ("GOOGL", "2024", "Item 8"): [note]}
+    decision = RouterDecision(companies=["GOOGL"], years=["2024"], sections=["Item 8"])
+    nodes, calls = run_retrieval(monkeypatch, catalog, decision, results)
+    assert calls == [("GOOGL", "2024", "Item 8"), ("statements", "GOOGL", "2024")]
+    assert {n.node.node_id for n in nodes} == {"is", "note"}
+
+
+def test_page_header_tables_and_repeats_are_skipped(monkeypatch, catalog):
+    assert router.is_empty_chunk("Table: Note 12. Net Income Per Share\nTable of Contents | Alphabet Inc.")
+    assert not router.is_empty_chunk("Table: CONSOLIDATED STATEMENTS OF INCOME\nNet income | 100,118")
+    header = make_node("Table: Note 12. Net Income Per Share\nTable of Contents | Alphabet Inc.", score=0.9, node_id="h")
+    real = make_node("Net income | 100,118", score=0.5, node_id="a")
+    repeat = make_node("Net income | 100,118", score=0.5, node_id="b")
+    nodes, _ = run_retrieval(monkeypatch, catalog, RouterDecision(companies=["AAPL"]),
+                             {("AAPL", None, None): [header, real, repeat]})
+    assert [n.node.node_id for n in nodes] == ["a"]
