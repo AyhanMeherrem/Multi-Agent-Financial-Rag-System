@@ -17,6 +17,8 @@ from llama_index.vector_stores.qdrant import QdrantVectorStore
 from pydantic import BaseModel, ValidationError, field_validator
 from qdrant_client import QdrantClient
 
+from app.llm_errors import chat
+
 load_dotenv()
 logger = logging.getLogger(__name__)
 
@@ -52,13 +54,23 @@ def get_catalog(index: VectorStoreIndex) -> IndexCatalog:
     if key not in _catalog_cache:
         client = index.storage_context.vector_store.client
         points, _ = client.scroll(COLLECTION_NAME, limit=1_000_000, with_payload=["company", "year", "section"])
-        values = lambda field: tuple(sorted({p.payload[field] for p in points if p.payload.get(field)}))
+
+        def values(field):
+            return tuple(sorted({p.payload[field] for p in points if p.payload.get(field)}))
+
         _catalog_cache[key] = IndexCatalog(
             companies=values("company"),
             years=tuple(y for y in values("year") if y.isdigit()),
             sections=tuple(s for s in values("section") if s in SECTION_NAMES),
         )
     return _catalog_cache[key]
+
+
+def as_list(value) -> list:
+    # The model sometimes returns a single value instead of a one-item list
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
 
 
 class RouterDecision(BaseModel):
@@ -71,20 +83,20 @@ class RouterDecision(BaseModel):
     @field_validator("companies", mode="before")
     @classmethod
     def _tickers(cls, v):
-        return list(dict.fromkeys(str(c).strip().upper() for c in (v or []) if str(c).strip()))
+        return list(dict.fromkeys(str(c).strip().upper() for c in as_list(v) if str(c).strip()))
 
     @field_validator("years", mode="before")
     @classmethod
     def _years(cls, v):
         # "FY2024", 2024 and "2024" all become "2024"
-        found = [re.search(r"\d{4}", str(y)) for y in (v or [])]
+        found = [re.search(r"\d{4}", str(y)) for y in as_list(v)]
         return list(dict.fromkeys(m.group(0) for m in found if m))
 
     @field_validator("sections", mode="before")
     @classmethod
     def _sections(cls, v):
         # "item 1a", "Item 1A" and "1A" all become "Item 1A"
-        found = [re.search(r"(\d+[a-cA-C]?)\b", str(s)) for s in (v or [])]
+        found = [re.search(r"(\d+[a-cA-C]?)\b", str(s)) for s in as_list(v)]
         return list(dict.fromkeys(f"Item {m.group(1).upper()}" for m in found if m))[:3]
 
 
@@ -97,7 +109,7 @@ def get_router_llm() -> Groq:
         raise ValueError(
             "GROQ_API_KEY is missing or unconfigured in .env file!"
         )
-    return Groq(model="openai/gpt-oss-20b", api_key=api_key, temperature=0.0,
+    return Groq(model="openai/gpt-oss-20b", api_key=api_key, temperature=0.0, max_retries=3, timeout=60.0,
                 additional_kwargs={"reasoning_effort": "low", "response_format": {"type": "json_object"}})
 
 
@@ -149,7 +161,7 @@ def extract_filters(query_string: str, catalog: IndexCatalog, llm=None) -> Route
         ChatMessage(role=MessageRole.SYSTEM, content=build_router_prompt(catalog)),
         ChatMessage(role=MessageRole.USER, content=query_string),
     ]
-    response = llm.chat(messages)
+    response = chat(llm, messages)
     try:
         return RouterDecision.model_validate(json.loads(response.message.content))
     except (json.JSONDecodeError, ValidationError, TypeError) as e:

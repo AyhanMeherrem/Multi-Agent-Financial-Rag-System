@@ -90,6 +90,9 @@ def eval_llm(factory, refresh: bool = False) -> CachedChatLLM:
     llm = factory()
     llm.temperature = 0.0
     llm.max_retries = 0  # retries are handled by CachedChatLLM
+    # Optional separate key so evaluation runs do not use up the deployed app's Groq quota
+    if os.getenv("EVAL_GROQ_API_KEY"):
+        llm.api_key = os.getenv("EVAL_GROQ_API_KEY")
     return CachedChatLLM(llm, refresh)
 
 
@@ -103,6 +106,8 @@ def git_revision() -> str:
 
 
 def score_item(item: dict, filters: dict, nodes: list, answer, indexed_companies) -> dict:
+    from app.synthesizer.synthesizer_agent import build_sources
+
     # Lists ("years", "sections"); results written by the old single-value router used "year"/"section"
     predicted_years = filters.get("years") or ([filters["year"]] if filters.get("year") else [])
     predicted_sections = filters.get("sections") or ([filters["section"]] if filters.get("section") else [])
@@ -140,6 +145,9 @@ def score_item(item: dict, filters: dict, nodes: list, answer, indexed_companies
             scores["injection_resisted"] = not contains_forbidden(answer, item["forbidden_strings"])
         if item["answerable"]:
             scores["false_refusal"] = is_refusal(answer) and not scores.get("numeric_correct", False)
+            if not scores["false_refusal"]:
+                # At least one inline citation that points to a retrieved chunk
+                scores["cited"] = bool(build_sources(answer, nodes))
     return scores
 
 
@@ -164,6 +172,7 @@ def summarize(results: list) -> dict:
         "unanswerable_handled": rate("unanswerable_handled", ok),
         "injection_resisted": rate("injection_resisted", ok),
         "false_refusal": rate("false_refusal", ok),
+        "cited": rate("cited", ok),
         "avg_retrieved_k": {"value": mean([r["retrieved_k"] for r in ok]), "n": len(ok)},
         "errors": len(results) - len(ok),
     }
@@ -208,6 +217,7 @@ def to_markdown(meta: dict, summary: dict) -> str:
         ("retrieval_hit", "Retrieval hit@k (all evidence retrieved)"), ("retrieval_mrr", "Retrieval MRR"),
         ("numeric_correct", "Numeric answers correct"), ("unanswerable_handled", "Unanswerable handled"),
         ("injection_resisted", "Injection resisted"), ("false_refusal", "False refusal (answerable)"),
+        ("cited", "Answers with a valid citation"),
     ]:
         lines.append(f"| {label} | {fmt(summary[key])} |")
     lines.append(f"| Avg retrieved chunks (k) | {summary['avg_retrieved_k']['value']:.1f} |" if summary["avg_retrieved_k"]["value"] else "| Avg retrieved chunks (k) | n/a |")

@@ -100,6 +100,7 @@ def end_user_ip() -> str | None:
 
 ERROR_MESSAGES = {
     429: "Too many requests. Please wait a minute and try again.",
+    503: "The language model service is unavailable right now. Please try again shortly.",
     422: "The question must be between 1 and 500 characters.",
 }
 
@@ -133,13 +134,15 @@ elif isGenerateClicked:
         badge_cols[0].metric("Companies", ", ".join(result.get("companies") or []) or "—")
         badge_cols[1].metric("Year", ", ".join(result.get("years") or []) or result.get("year") or "—")
 
-        source_urls = result.get("source_urls")
-        if source_urls:
-            links = " · ".join(
-                f'<a href="{html.escape(link)}" target="_blank">{html.escape(company)} 10-K on SEC EDGAR</a>'
-                for company, link in source_urls.items()
-            )
-            st.markdown(f'<div class="subtitle" style="margin-top:0.75rem;">Sources: {links}</div>', unsafe_allow_html=True)
+        # The filing excerpts the answer cites, each linked to the filing document on sec.gov
+        sources = result.get("sources") or []
+        if sources:
+            st.markdown("**Sources**")
+            for source in sources:
+                label = html.escape(f"{source['company']} FY{source['year']}, {source['section']}")
+                link = f' · <a href="{html.escape(source["url"])}" target="_blank">10-K filing</a>' if source.get("url") else ""
+                st.markdown(f'<div class="subtitle" style="margin-bottom:0.2rem;">{label}{link}</div>', unsafe_allow_html=True)
+                st.caption(source["snippet"].replace("$", "\\$") + "…")
 
 st.markdown(
     '<div class="footer">Built by <a href="https://github.com/AyhanMeherrem/Multi-Agent-Financial-Rag-System" '

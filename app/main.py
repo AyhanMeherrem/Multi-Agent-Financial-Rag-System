@@ -9,8 +9,9 @@ from fastapi.requests import Request
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from app.llm_errors import LLMRateLimited, LLMUnavailable
 from app.router.router_agent import get_catalog, load_index_from_qdrant
-from app.synthesizer.synthesizer_agent import synthesize_financial_answer
+from app.synthesizer.synthesizer_agent import answer_query, build_sources
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -45,12 +46,20 @@ def get_client_ip(request: Request) -> str:
 class QueryRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)
 
+class Source(BaseModel):
+    company: str
+    year: str
+    section: str
+    url: str | None = None  # the filing document on sec.gov
+    snippet: str
+
 class AgentResponse(BaseModel):
     answer : str
     companies: list[str] | None =None
     year : str | None = None  # set when the question is about exactly one fiscal year
     years: list[str] | None = None
-    source_urls: dict[str, str] | None = None
+    source_urls: dict[str, str] | None = None  # EDGAR company search links, kept for compatibility
+    sources: list[Source] | None = None  # the filing excerpts the answer cites
 
 # just building visualization for pdfs, it returns url's under answer box
 def build_edgar_source_urls(companies: list[str] | None, year: str | None) -> dict[str, str] | None:
@@ -104,7 +113,13 @@ async def financial_query(request: Request, body: QueryRequest):
     try:
         # The pipeline is blocking (Groq HTTP calls, CPU embedding, local Qdrant). Running it in
         # a worker thread keeps the event loop free for other requests such as /health.
-        final_answer, filters = await run_in_threadpool(synthesize_financial_answer, body.query, index)
+        final_answer, filters, nodes = await run_in_threadpool(answer_query, body.query, index)
+    except LLMRateLimited:
+        logger.warning("Groq rate limit reached")
+        raise HTTPException(status_code=429, detail="The language model is busy. Please try again in a minute.")
+    except LLMUnavailable:
+        logger.exception("Groq unavailable")
+        raise HTTPException(status_code=503, detail="The language model service is unavailable. Please try again shortly.")
     except Exception:
         # catch any error during synthesis and return 502 Bad Gateway 
         logger.exception("financial_query failed")
@@ -120,4 +135,5 @@ async def financial_query(request: Request, body: QueryRequest):
         year=year,
         years=filters.get("years"),
         source_urls=build_edgar_source_urls(indexed, year),
+        sources=build_sources(final_answer, nodes),
     )
