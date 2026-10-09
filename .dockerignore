@@ -10,6 +10,7 @@
 sec_edgar_filings/
 data/raw_filings/
 data/qdrant_db/.lock
+data/qdrant_db.bak_*/
 __pycache__/
 *.pyc
 .venv

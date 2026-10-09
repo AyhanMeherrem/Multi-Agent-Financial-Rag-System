@@ -21,7 +21,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "financial_filings"
-TOP_K_PER_COMBINATION = 5
+TOP_K_PER_COMBINATION = 8
 # The synthesizer gets at most this much context. Groq allows 8000 tokens per minute on this
 # key, and ~16k characters is ~4k tokens, which leaves room for the prompt and the answer.
 MAX_CONTEXT_CHUNKS = 16

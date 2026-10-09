@@ -8,9 +8,9 @@ _QUOTES = str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"',
 
 
 def normalize_text(text: str) -> str:
-    # Lowercase, unify quotes/dashes, drop "$" and collapse whitespace so that
-    # "Total net sales $ 391,035" and "Total net sales 391,035" compare equal
-    text = text.translate(_QUOTES).lower().replace("$", " ")
+    # Lowercase, unify quotes/dashes, drop "$" and table cell separators "|", and collapse whitespace,
+    # so that "Total net sales $ 391,035" and "Total net sales | 391,035" both match "Total net sales 391,035"
+    text = text.translate(_QUOTES).lower().replace("$", " ").replace("|", " ")
     text = re.sub(r"\s+", " ", text)
     text = re.sub(r" %", "%", text)
     return text.strip()
