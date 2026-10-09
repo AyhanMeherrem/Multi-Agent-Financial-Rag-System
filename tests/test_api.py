@@ -92,3 +92,27 @@ def test_client_ip_uses_forwarded_ip_only_with_valid_key(monkeypatch):
 def test_client_ip_ignores_forwarded_ip_when_proxy_headers_are_off(monkeypatch):
     monkeypatch.setattr(main, "TRUST_PROXY_HEADERS", False)
     assert main.get_client_ip(make_request({"X-Internal-Key": "test-key", "X-End-User-IP": "1.2.3.4"})) == "10.0.0.5"
+
+
+def test_repeated_question_is_served_from_cache(client, monkeypatch):
+    calls = []
+
+    def counting(query, index):
+        calls.append(query)
+        return fake_answer_query(query, index)
+    monkeypatch.setattr(main, "answer_query", counting)
+    first = client.post("/query", json={"query": "What were Apple's net sales in 2024?"}, headers=HEADERS).json()
+    second = client.post("/query", json={"query": "what were apple's  net sales in 2024"}, headers=HEADERS).json()
+    assert len(calls) == 1
+    assert first["cached"] is False and second["cached"] is True
+    assert {**second, "cached": False} == first
+
+
+def test_errors_are_not_cached(client, monkeypatch):
+    def failing(query, index):
+        raise LLMRateLimited("429")
+    monkeypatch.setattr(main, "answer_query", failing)
+    assert client.post("/query", json={"query": "q"}, headers=HEADERS).status_code == 429
+    monkeypatch.setattr(main, "answer_query", fake_answer_query)
+    response = client.post("/query", json={"query": "q"}, headers=HEADERS)
+    assert response.status_code == 200 and response.json()["cached"] is False
