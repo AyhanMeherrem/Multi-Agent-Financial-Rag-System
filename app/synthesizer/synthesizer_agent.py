@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 from llama_index.core.llms import ChatMessage, MessageRole
@@ -116,9 +117,44 @@ def build_sources(answer: str, nodes: list) -> list[dict]:
         sources.append({
             "company": company, "year": year, "section": section,
             "url": best.node.metadata.get("filing_url"),
+            "passage_url": passage_url(best.node.metadata.get("filing_url"), best.node.text),
             "snippet": re.sub(r"\s+", " ", best.node.text)[:240],
         })
     return sources
+
+
+def passage_url(url: str | None, chunk_text: str) -> str | None:
+    # The filing link plus a text fragment (#:~:text=...): browsers that support it (Chrome, Edge,
+    # Safari) open the filing scrolled to the cited passage and highlight it; others just open the
+    # filing. A fragment only matches text inside one block of the page, so it targets one line of
+    # the chunk: the table's own heading, or the start of the first paragraph.
+    if not url:
+        return None
+    lines = [line.strip() for line in chunk_text.split("\n") if line.strip()]
+    if not lines:
+        return url
+    suffix = None
+    if lines[0].startswith("Table: "):
+        # "Table: ITEM 8. FINANCIAL STATEMENTS ... / INCOME STATEMENTS", then header rows such as
+        # "(In millions, except per share amounts)". The last caption part is the table's own heading.
+        target = lines[0][len("Table: "):].split(" / ")[-1]
+        # Statement titles are also listed in the index of financial statements; requiring the unit
+        # line right after the title (",-(In millions") skips the index entry
+        if len(lines) > 1 and lines[1].startswith("("):
+            suffix = " ".join(lines[1].split()[:2]).rstrip(",")
+    else:
+        # Text chunks start with the headings they sit under, then the paragraphs
+        # (a table row without a caption keeps only its label: cells are separate blocks)
+        target = max(lines, key=len).split(" | ")[0]
+        target = " ".join(target.split()[:8])
+    target = target.strip(" .,:;")
+    if len(target) < 8:
+        return url
+
+    def encode(text: str) -> str:
+        return quote(text, safe="").replace("-", "%2D")
+
+    return f"{url}#:~:text={encode(target)}" + (f",-{encode(suffix)}" if suffix else "")
 
 
 # Full pipeline that also returns the retrieved nodes, so callers (the API, the eval harness) can inspect retrieval

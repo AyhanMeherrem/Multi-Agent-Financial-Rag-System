@@ -9,6 +9,7 @@ from fastapi.requests import Request
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from app.answer_cache import AnswerCache
 from app.llm_errors import LLMRateLimited, LLMUnavailable
 from app.router.router_agent import get_catalog, load_index_from_qdrant
 from app.synthesizer.synthesizer_agent import answer_query, build_sources
@@ -51,6 +52,7 @@ class Source(BaseModel):
     year: str
     section: str
     url: str | None = None  # the filing document on sec.gov
+    passage_url: str | None = None  # the same document, scrolled to the cited passage where supported
     snippet: str
 
 class AgentResponse(BaseModel):
@@ -60,6 +62,7 @@ class AgentResponse(BaseModel):
     years: list[str] | None = None
     source_urls: dict[str, str] | None = None  # EDGAR company search links, kept for compatibility
     sources: list[Source] | None = None  # the filing excerpts the answer cites
+    cached: bool = False  # served from the answer cache, no LLM call
 
 # just building visualization for pdfs, it returns url's under answer box
 def build_edgar_source_urls(companies: list[str] | None, year: str | None) -> dict[str, str] | None:
@@ -79,6 +82,7 @@ def build_edgar_source_urls(companies: list[str] | None, year: str | None) -> di
 async def lifespan(app:FastAPI):
     app.state.index = load_index_from_qdrant() # runs only one time before backend starting
     get_catalog(app.state.index)  # read the indexed companies/years/sections once, up front
+    app.state.answer_cache = AnswerCache()
     yield
     # Do nothing special for shut down
 
@@ -110,6 +114,10 @@ async def health(request: Request):
 @limiter.limit("10/minute")
 async def financial_query(request: Request, body: QueryRequest):
     index = request.app.state.index
+    cache = request.app.state.answer_cache
+    cached = cache.get(body.query)
+    if cached is not None:
+        return cached.model_copy(update={"cached": True})
     try:
         # The pipeline is blocking (Groq HTTP calls, CPU embedding, local Qdrant). Running it in
         # a worker thread keeps the event loop free for other requests such as /health.
@@ -129,7 +137,7 @@ async def financial_query(request: Request, body: QueryRequest):
     # Only link filings that are actually indexed (the router also reports non-indexed tickers), and
     # none at all when the answer is a fixed "not covered" or "out of scope" message
     indexed = [] if filters.get("fixed_answer") else [c for c in companies or [] if c in get_catalog(index).companies]
-    return AgentResponse(
+    response = AgentResponse(
         answer=final_answer,
         companies=companies,
         year=year,
@@ -137,3 +145,6 @@ async def financial_query(request: Request, body: QueryRequest):
         source_urls=build_edgar_source_urls(indexed, year),
         sources=build_sources(final_answer, nodes),
     )
+    # Errors raise above, so only real answers are cached
+    cache.put(body.query, response)
+    return response
