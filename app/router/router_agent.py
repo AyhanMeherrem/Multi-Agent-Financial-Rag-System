@@ -1,8 +1,8 @@
 import json
 import logging
-import os
 import re
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from itertools import product
 
 from dotenv import load_dotenv
@@ -12,22 +12,37 @@ from llama_index.core.retrievers import VectorIndexRetriever
 from llama_index.core.schema import QueryBundle
 from llama_index.core.vector_stores import ExactMatchFilter, MetadataFilters
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.llms.groq import Groq
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from pydantic import BaseModel, ValidationError, field_validator
 from qdrant_client import QdrantClient
 
 from app.llm_errors import chat
+from app.llm_provider import get_llm
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "financial_filings"
 TOP_K_PER_COMBINATION = 8
-# The synthesizer gets at most this much context. Groq allows 8000 tokens per minute on this
-# key, and ~16k characters is ~4k tokens, which leaves room for the prompt and the answer.
+# Primary financial statements searched separately for each filing, see retrieve_nodes
+TOP_K_STATEMENTS = 3
+# Captions of the primary statements (not the notes), e.g. "CONSOLIDATED STATEMENTS OF OPERATIONS"
+# (AAPL, AMZN), "Consolidated Statements of Income" (NVDA), "INCOME STATEMENTS" (MSFT)
+STATEMENT_CAPTION = re.compile(r"(consolidated )?(statements? of (operations|income|earnings|cash flows)|balance sheets?"
+                               r"|income statements|cash flows statements)", re.IGNORECASE)
+# The synthesizer gets at most this much context: ~16k characters is ~4k tokens, which keeps each
+# question within Groq's free-tier limit of 8000 tokens per minute and keeps cost and latency low.
 MAX_CONTEXT_CHUNKS = 16
 MAX_CONTEXT_CHARS = 16000
+# Each company and year is a separate search sharing that context, so more than three companies
+# (six filings over two years) would leave about one excerpt per filing
+MAX_COMPANIES_PER_QUESTION = 3
+
+# Names for the router prompt, so "Alphabet" or "Facebook" map to the indexed ticker
+COMPANY_NAMES = {"AAPL": "Apple", "MSFT": "Microsoft", "NVDA": "NVIDIA", "GOOGL": "Alphabet, Google",
+                 "AMZN": "Amazon", "META": "Meta Platforms, Facebook"}
+# Other tickers the model may use for an indexed company
+TICKER_ALIASES = {"GOOG": "GOOGL", "FB": "META"}
 
 SECTION_NAMES = {
     "Item 1": "Business", "Item 1A": "Risk Factors", "Item 1C": "Cybersecurity", "Item 2": "Properties",
@@ -44,6 +59,11 @@ class IndexCatalog:
     companies: tuple
     years: tuple
     sections: tuple
+    # (company, year) filings whose Item 8 only refers to the financial statements in Item 15 (NVDA)
+    financials_in_item_15: frozenset = frozenset()
+    filings: tuple = ()  # every indexed (company, year)
+    # {(company, year): node ids of the income statement, balance sheet and cash flow statement chunks}
+    statements: dict = field(default_factory=dict, hash=False, compare=False)
 
 
 _catalog_cache: dict = {}
@@ -53,17 +73,57 @@ def get_catalog(index: VectorStoreIndex) -> IndexCatalog:
     key = id(index)
     if key not in _catalog_cache:
         client = index.storage_context.vector_store.client
-        points, _ = client.scroll(COLLECTION_NAME, limit=1_000_000, with_payload=["company", "year", "section"])
+        points, _ = client.scroll(COLLECTION_NAME, limit=1_000_000,
+                                  with_payload=["company", "year", "section", "element_type", "_node_content"])
 
         def values(field):
             return tuple(sorted({p.payload[field] for p in points if p.payload.get(field)}))
 
+        chunks = Counter((p.payload.get("company"), p.payload.get("year"), p.payload.get("section")) for p in points)
         _catalog_cache[key] = IndexCatalog(
             companies=values("company"),
             years=tuple(y for y in values("year") if y.isdigit()),
             sections=tuple(s for s in values("section") if s in SECTION_NAMES),
+            financials_in_item_15=frozenset(
+                (c, y) for (c, y, s), n in chunks.items()
+                if s == "Item 15" and n >= 20 and chunks[(c, y, "Item 8")] <= 2),
+            filings=tuple(sorted({(c, y) for c, y, _ in chunks if c and y and y.isdigit()})),
+            statements=find_statements(points),
         )
     return _catalog_cache[key]
+
+
+def is_statement_caption(caption: str) -> bool:
+    # One part of the caption must be exactly a statement title, so notes such as "Note 9 - Balance
+    # Sheet Components" or "Consolidated Statements of Cash Flows Reconciliation" do not count
+    return any(STATEMENT_CAPTION.fullmatch(part.strip()) for part in caption.split(" / "))
+
+
+# Alphabet repeats a "Table of Contents | Alphabet Inc." layout table at the top of every page; the
+# parser keeps each one as a tiny table chunk under the page's heading ("Table: Note 12. Net Income
+# Per Share"). The heading makes them rank high while they hold no content.
+PAGE_HEADER_ROW = re.compile(r"Table of Contents( \| .*)?", re.IGNORECASE)
+
+
+def is_empty_chunk(text: str) -> bool:
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    if lines and lines[0].startswith("Table: "):
+        lines = lines[1:]
+    return not [line for line in lines if not PAGE_HEADER_ROW.fullmatch(line)]
+
+
+def find_statements(points) -> dict:
+    statements = {}
+    for p in points:
+        payload = p.payload
+        if payload.get("element_type") != "table" or payload.get("section") not in ("Item 8", "Item 15"):
+            continue
+        text = json.loads(payload.get("_node_content") or "{}").get("text", "")
+        first_line = text.split("\n")[0]
+        if (first_line.startswith("Table: ") and is_statement_caption(first_line[len("Table: "):])
+                and not is_empty_chunk(text)):
+            statements.setdefault((payload["company"], payload["year"]), []).append(str(p.id))
+    return statements
 
 
 def as_list(value) -> list:
@@ -83,7 +143,8 @@ class RouterDecision(BaseModel):
     @field_validator("companies", mode="before")
     @classmethod
     def _tickers(cls, v):
-        return list(dict.fromkeys(str(c).strip().upper() for c in as_list(v) if str(c).strip()))
+        tickers = (str(c).strip().upper() for c in as_list(v) if str(c).strip())
+        return list(dict.fromkeys(TICKER_ALIASES.get(t, t) for t in tickers))
 
     @field_validator("years", mode="before")
     @classmethod
@@ -100,27 +161,22 @@ class RouterDecision(BaseModel):
         return list(dict.fromkeys(f"Item {m.group(1).upper()}" for m in found if m))[:3]
 
 
-def get_router_llm() -> Groq:
-    # Initialize Groq (gpt-oss-20b) for parsing and routing. It is a reasoning model;
-    # low effort keeps latency and token use down for this small extraction task.
-    # JSON mode makes Groq reject any output that is not a single JSON object.
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key or api_key == "your_groq_api_key_here":
-        raise ValueError(
-            "GROQ_API_KEY is missing or unconfigured in .env file!"
-        )
-    return Groq(model="openai/gpt-oss-20b", api_key=api_key, temperature=0.0, max_retries=3, timeout=60.0,
-                additional_kwargs={"reasoning_effort": "low", "response_format": {"type": "json_object"}})
+def get_router_llm():
+    # gpt-oss-20b for parsing and routing. It is a reasoning model; low effort keeps latency and
+    # token use down for this small extraction task. JSON mode makes the API reject any output that
+    # is not a single JSON object.
+    return get_llm("openai/gpt-oss-20b", reasoning_effort="low", temperature=0.0, json_mode=True)
 
 
 def build_router_prompt(catalog: IndexCatalog) -> str:
     sections = "\n".join(f'        - "{s}": {SECTION_NAMES[s]}' for s in catalog.sections)
+    companies = ", ".join(f"{c} ({COMPANY_NAMES[c]})" if c in COMPANY_NAMES else c for c in catalog.companies)
     return f"""You are the query router for a search system over SEC 10-K filings.
-        Indexed companies: {", ".join(catalog.companies)}. Indexed fiscal years: {", ".join(catalog.years)}.
+        Indexed companies: {companies}. Indexed fiscal years: {", ".join(catalog.years)}.
 
         Return a JSON object with exactly these keys:
         - "companies": tickers of every company the question asks about, including companies that are not
-          indexed (for example GOOGL for Alphabet, TSLA for Tesla). Empty list if no company is named.
+          indexed (for example TSLA for Tesla, NFLX for Netflix). Empty list if no company is named.
         - "years": every fiscal year the question asks about as 4-digit strings, including years that are not
           indexed. "Between 2024 and 2025" or "change from 2024 to 2025" means both years. Empty list if none.
         - "sections": the section most likely to contain the answer. Add a second section only when the
@@ -135,7 +191,8 @@ def build_router_prompt(catalog: IndexCatalog) -> str:
         - Exact figures from the income statement, balance sheet or cash flow statement (net income, total
           revenue or net sales, EPS, operating income, R&D expense, gross margin in dollars) and notes to the
           financial statements -> "Item 8".
-        - Explanations of changes, product or segment revenue (iPhone, Services, Microsoft Cloud, Azure),
+        - Explanations of changes, product or segment revenue (iPhone, Services, Microsoft Cloud, Azure,
+          NVIDIA Data Center, Google Cloud, AWS, Meta Reality Labs),
           gross margin percentage, tax rate, liquidity, share repurchases and dividends, acquisitions -> "Item 7".
         - Products, services, segments, employees and strategy -> "Item 1".
         - Risks -> "Item 1A". Cybersecurity governance and incidents -> "Item 1C". Properties and
@@ -189,6 +246,9 @@ def unsupported_answer(decision: RouterDecision, catalog: IndexCatalog) -> str |
     if missing_companies or missing_years:
         missing = ", ".join(missing_companies + [f"fiscal year {y}" for y in missing_years])
         return f"The indexed filings do not include {missing}. {available}"
+    if len(decision.companies) > MAX_COMPANIES_PER_QUESTION:
+        return (f"I can compare at most {MAX_COMPANIES_PER_QUESTION} companies in one question. "
+                f"Please ask about up to {MAX_COMPANIES_PER_QUESTION} of: {', '.join(catalog.companies)}.")
     return None
 
 
@@ -205,8 +265,9 @@ def construct_sec_filters(company: str = None, year: str = None, section: str = 
 
 
 def get_sec_retriever(index: VectorStoreIndex, company: str = None, year: str = None, section: str = None,
-                      top_k: int = TOP_K_PER_COMBINATION) -> VectorIndexRetriever:
-    return VectorIndexRetriever(index=index, similarity_top_k=top_k, filters=construct_sec_filters(company, year, section))
+                      top_k: int = TOP_K_PER_COMBINATION, node_ids: list | None = None) -> VectorIndexRetriever:
+    return VectorIndexRetriever(index=index, similarity_top_k=top_k, filters=construct_sec_filters(company, year, section),
+                                node_ids=node_ids)
 
 
 def retrieve_nodes(query_string: str, index: VectorStoreIndex, decision: RouterDecision, catalog: IndexCatalog) -> list:
@@ -222,20 +283,35 @@ def retrieve_nodes(query_string: str, index: VectorStoreIndex, decision: RouterD
     # One Qdrant metadata filter can only AND exact matches, so each (company, year, section)
     # combination is a separate search. The query is embedded once and reused for all of them.
     bundle = QueryBundle(query_str=query_string, embedding=index._embed_model.get_query_embedding(query_string))
-    per_combination = [get_sec_retriever(index, c, y, s).retrieve(bundle) for c, y, s in product(companies, years, sections)]
+    combinations = [(c, y, "Item 15" if s == "Item 8" and (c, y) in catalog.financials_in_item_15 else s)
+                    for c, y, s in product(companies, years, sections)]
+    per_combination = [get_sec_retriever(index, c, y, s).retrieve(bundle) for c, y, s in combinations]
+    # Headline figures (revenue, net income, EPS, cash flow) are in the primary statements, but in a
+    # large Item 8 those number-heavy tables rank below the notes that mention the same items
+    # (measured: Alphabet's income statement was not in the top 20). So for every filing whose
+    # financial statements are searched, the statements are also searched on their own, and their
+    # best matches come first.
+    statement_filings = list(dict.fromkeys((c, y) for c, y, s in combinations
+                                           if s in ("Item 8", "Item 15") and (c, y) in catalog.statements))
+    per_combination = [get_sec_retriever(index, c, y, None, top_k=TOP_K_STATEMENTS,
+                                         node_ids=catalog.statements[(c, y)]).retrieve(bundle)
+                       for c, y in statement_filings] + per_combination
 
     # Take results rank by rank across combinations (every combination's best hit first) so that one
     # company or year cannot crowd out the other in a comparison, skip duplicates, stop at the cap.
+    # Chunks with no content and repeats of the same text are skipped (see is_empty_chunk).
     selected, seen, chars = [], set(), 0
     for rank in range(TOP_K_PER_COMBINATION):
         for results in per_combination:
-            if rank >= len(results) or results[rank].node.node_id in seen:
+            if rank >= len(results):
                 continue
             node = results[rank]
+            if node.node.node_id in seen or node.node.text in seen or is_empty_chunk(node.node.text):
+                continue
             if len(selected) >= MAX_CONTEXT_CHUNKS or chars + len(node.node.text) > MAX_CONTEXT_CHARS:
                 continue
             selected.append(node)
-            seen.add(node.node.node_id)
+            seen.update((node.node.node_id, node.node.text))
             chars += len(node.node.text)
     return sorted(selected, key=lambda n: n.score or 0.0, reverse=True)
 

@@ -1,4 +1,5 @@
 from app.synthesizer.synthesizer_agent import (REFUSAL_MESSAGE, build_sources, build_system_prompt, clean_answer,
+                                               fiscal_year_note, passage_url,
                                                generate_answer)
 from tests.helpers import FakeLLM, make_node
 
@@ -49,3 +50,54 @@ def test_no_citations_means_no_sources():
 def test_citation_spacing_variants_are_normalized():
     for raw in ["[AAPL\u202f|\u202fFY2024\u202f|\u202fItem\u202f8]", "[ AAPL | FY2024 | Item 8 ]", "[AAPL|FY2024|Item 8]"]:
         assert clean_answer(f"Net sales were 391,035 million {raw}.") == "Net sales were 391,035 million [AAPL | FY2024 | Item 8]."
+
+
+def test_passage_url_targets_the_table_heading_after_the_statement_index():
+    table = ("Table: ITEM 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA / INCOME STATEMENTS\n"
+             "(In millions, except per share amounts)\nYear Ended June 30, | 2024 | 2023\nTotal revenue | 245,122 | 211,915")
+    assert passage_url("https://www.sec.gov/x.htm", table) == \
+        "https://www.sec.gov/x.htm#:~:text=INCOME%20STATEMENTS,-%28In%20millions"
+    note = "Table: Note 2 \u2013 Revenue\n2024 | 2023 | 2022\niPhone | 201,183 | 200,583 | 205,489"
+    assert passage_url("https://www.sec.gov/x.htm", note) == "https://www.sec.gov/x.htm#:~:text=Note%202%20%E2%80%93%20Revenue"
+
+
+def test_passage_url_targets_the_start_of_the_paragraph():
+    text = ("Item 1A. Risk Factors / Macroeconomic and Industry Risks\n"
+            "The Company's operations and performance depend significantly on global and regional economic conditions.")
+    assert passage_url("https://www.sec.gov/x.htm", text) == ("https://www.sec.gov/x.htm#:~:text=The%20Company%27s%20"
+                                                             "operations%20and%20performance%20depend%20significantly%20on")
+    assert passage_url(None, text) is None
+
+
+def test_rate_limited_main_model_falls_back_to_the_smaller_one(monkeypatch, catalog):
+    import app.synthesizer.synthesizer_agent as synth
+    from app.llm_errors import LLMRateLimited
+    from app.router.router_agent import RouterDecision
+
+    monkeypatch.setattr(synth, "get_catalog", lambda index: catalog)
+    monkeypatch.setattr(synth, "extract_filters", lambda q, c: RouterDecision(companies=["AAPL"], years=["2024"]))
+    monkeypatch.setattr(synth, "retrieve_nodes", lambda q, i, d, c: [make_node("Total net sales | 391,035")])
+    used = []
+
+    def fake_generate(query, nodes, llm=None):
+        used.append(llm.model if llm else synth.SYNTHESIZER_MODEL)
+        if llm is None:
+            raise LLMRateLimited("Rate limit reached on tokens per minute (TPM)")
+        return "Net sales were 391,035 million [AAPL | FY2024 | Item 8]."
+    monkeypatch.setattr(synth, "generate_answer", fake_generate)
+    monkeypatch.setenv("GROQ_API_KEY", "test")
+    answer, filters, _ = synth.answer_query("Apple net sales 2024", index=None)
+    assert used == [synth.SYNTHESIZER_MODEL, synth.FALLBACK_MODEL]
+    assert answer.startswith("Net sales") and filters["fallback_model"] is True
+
+
+def test_fiscal_year_note_only_when_cited_companies_close_on_different_dates():
+    nvda = make_node("Net income | 72,880", company="NVDA", year="2025", period_end_date="2025-01-26")
+    meta = make_node("Net income | 60,458", company="META", year="2025", period_end_date="2025-12-31")
+    googl = make_node("Net income | 132,170", company="GOOGL", year="2025", period_end_date="2025-12-31")
+    answer = "NVIDIA earned 72,880 [NVDA | FY2025 | Item 15] and Meta 60,458 [META | FY2025 | Item 8]."
+    assert fiscal_year_note(answer, [nvda, meta]) == ("Fiscal years end on different dates: META FY2025 ended "
+                                                       "December 31, 2025 · NVDA FY2025 ended January 26, 2025.")
+    same_end = "Alphabet 132,170 [GOOGL | FY2025 | Item 8], Meta 60,458 [META | FY2025 | Item 8]."
+    assert fiscal_year_note(same_end, [googl, meta]) is None
+    assert fiscal_year_note("Only [NVDA | FY2025 | Item 15].", [nvda]) is None

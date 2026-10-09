@@ -1,16 +1,19 @@
 import logging
-import os
 import re
+import time
+from datetime import date
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 from llama_index.core.llms import ChatMessage, MessageRole
-from llama_index.llms.groq import Groq
-from app.llm_errors import chat
+from app.llm_errors import LLMRateLimited, chat
+from app.llm_provider import get_llm
 from app.router.router_agent import (extract_filters, filters_for_response, get_catalog, retrieve_nodes,
                                      unsupported_answer)
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+timing_logger = logging.getLogger("uvicorn.error")  # shown in the server log
 
 # Phoenix tracing and the interactive terminal session live in app/dev/phoenix_tools.py (dev only)
 
@@ -19,17 +22,16 @@ REFUSAL_MESSAGE = "I can only answer questions about the indexed SEC 10-K filing
 CITATION_PATTERN = re.compile(r"\[([A-Z]{1,5})\s*\|\s*FY(\d{4})\s*\|\s*(Item \d{1,2}[A-C]?|General)\]")
 
 
-def get_synthesizer_llm() -> Groq:
+SYNTHESIZER_MODEL = "openai/gpt-oss-120b"
+# Used when the main model hits a rate limit. Providers limit each model separately, so this
+# keeps answering at busy moments, with somewhat weaker answers.
+FALLBACK_MODEL = "openai/gpt-oss-20b"
 
-    #initializing groq lpu
 
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key or api_key == "your_groq_api_key_here":
-        raise ValueError("GROQ_API_KEY is missing or unconfigured in .env file!")
+def get_synthesizer_llm(model: str = SYNTHESIZER_MODEL):
     # Medium reasoning effort: at "low" the model missed figures in tables deep in a 16-excerpt
     # context and wrongly answered that they were not in the filings (measured with the eval harness)
-    return Groq(model="openai/gpt-oss-120b", api_key=api_key, max_retries=3, timeout=60.0,
-                additional_kwargs={"reasoning_effort": "medium"})
+    return get_llm(model, reasoning_effort="medium")
 
 
 def source_label(metadata: dict) -> str:
@@ -116,15 +118,71 @@ def build_sources(answer: str, nodes: list) -> list[dict]:
         sources.append({
             "company": company, "year": year, "section": section,
             "url": best.node.metadata.get("filing_url"),
+            "passage_url": passage_url(best.node.metadata.get("filing_url"), best.node.text),
             "snippet": re.sub(r"\s+", " ", best.node.text)[:240],
         })
     return sources
 
 
+def fiscal_year_note(answer: str, nodes: list) -> str | None:
+    # Companies close their fiscal years in different months (NVDA in January, MSFT in June, AAPL in
+    # September, most others in December), so "fiscal 2025" covers different periods. When an answer
+    # cites filings of more than one company whose year-end dates differ, this says so, using the
+    # period end dates from the filing headers rather than relying on the model to mention them.
+    ends = {}
+    for company, year, _ in CITATION_PATTERN.findall(answer or ""):
+        for n in nodes:
+            m = n.node.metadata
+            if (m.get("company"), m.get("year")) == (company, year) and m.get("period_end_date"):
+                ends[(company, year)] = m["period_end_date"]
+                break
+    if len({company for company, _ in ends}) < 2 or len({d[5:] for d in ends.values()}) < 2:
+        return None
+    parts = [f"{company} FY{year} ended {date.fromisoformat(end):%B} {date.fromisoformat(end).day}, "
+             f"{date.fromisoformat(end).year}" for (company, year), end in sorted(ends.items())]
+    return "Fiscal years end on different dates: " + " · ".join(parts) + "."
+
+
+def passage_url(url: str | None, chunk_text: str) -> str | None:
+    # The filing link plus a text fragment (#:~:text=...): browsers that support it (Chrome, Edge,
+    # Safari) open the filing scrolled to the cited passage and highlight it; others just open the
+    # filing. A fragment only matches text inside one block of the page, so it targets one line of
+    # the chunk: the table's own heading, or the start of the first paragraph.
+    if not url:
+        return None
+    lines = [line.strip() for line in chunk_text.split("\n") if line.strip()]
+    if not lines:
+        return url
+    suffix = None
+    if lines[0].startswith("Table: "):
+        # "Table: ITEM 8. FINANCIAL STATEMENTS ... / INCOME STATEMENTS", then header rows such as
+        # "(In millions, except per share amounts)". The last caption part is the table's own heading.
+        target = lines[0][len("Table: "):].split(" / ")[-1]
+        # Statement titles are also listed in the index of financial statements; requiring the unit
+        # line right after the title (",-(In millions") skips the index entry
+        if len(lines) > 1 and lines[1].startswith("("):
+            suffix = " ".join(lines[1].split()[:2]).rstrip(",")
+    else:
+        # Text chunks start with the headings they sit under, then the paragraphs
+        # (a table row without a caption keeps only its label: cells are separate blocks)
+        target = max(lines, key=len).split(" | ")[0]
+        target = " ".join(target.split()[:8])
+    target = target.strip(" .,:;")
+    if len(target) < 8:
+        return url
+
+    def encode(text: str) -> str:
+        return quote(text, safe="").replace("-", "%2D")
+
+    return f"{url}#:~:text={encode(target)}" + (f",-{encode(suffix)}" if suffix else "")
+
+
 # Full pipeline that also returns the retrieved nodes, so callers (the API, the eval harness) can inspect retrieval
 def answer_query(query_str: str, index):
+    started = time.perf_counter()
     catalog = get_catalog(index)
     decision = extract_filters(query_str, catalog)
+    routed = time.perf_counter()
     filters = filters_for_response(decision)
     # Off-topic questions and questions about companies or years that are not indexed get a fixed
     # answer instead of an LLM answer built from unrelated chunks
@@ -132,8 +190,20 @@ def answer_query(query_str: str, index):
     if fixed_answer:
         return fixed_answer, {**filters, "fixed_answer": True}, []
     nodes = retrieve_nodes(query_str, index, decision, catalog)
-    answer_text = generate_answer(query_str, nodes)
+    retrieved = time.perf_counter()
+    try:
+        answer_text = generate_answer(query_str, nodes)
+    except LLMRateLimited as e:
+        logger.warning("%s rate limited (%s); answering with %s", SYNTHESIZER_MODEL, e, FALLBACK_MODEL)
+        answer_text = generate_answer(query_str, nodes, llm=get_synthesizer_llm(FALLBACK_MODEL))
+        filters = {**filters, "fallback_model": True}
+    note = fiscal_year_note(answer_text, nodes)
+    if note:
+        answer_text = f"{answer_text}\n\n{note}"
     logger.debug("Filters %s, answer: %s", filters, answer_text)
+    done = time.perf_counter()
+    timing_logger.info("Timing: router %.1fs, retrieval %.1fs, answer %.1fs", routed - started,
+                       retrieved - routed, done - retrieved)
     return answer_text, filters, nodes
 
 

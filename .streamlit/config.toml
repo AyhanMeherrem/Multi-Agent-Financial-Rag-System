@@ -1,6 +1,8 @@
-# The page CSS paints a dark background, so the theme must be dark too. Without this,
-# Streamlit follows the visitor's OS theme and light-mode visitors get dark text on a
-# dark background.
+# The page CSS is designed for a light background, so the theme is pinned to light. Without this,
+# Streamlit follows the visitor's OS theme and dark-mode visitors get mismatched widgets.
 [theme]
-base = "dark"
-primaryColor = "#5b8cff"
+base = "light"
+primaryColor = "#2563eb"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f1f5f9"
+textColor = "#0f172a"

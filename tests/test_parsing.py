@@ -41,13 +41,13 @@ def test_table_of_contents_entries_do_not_start_sections():
     texts = ["Item 1. Business", "Item 1A. Risk Factors",            # table of contents
              "Item 1. Business", "long business text " * 20,          # real Item 1
              "Item 1A. Risk Factors", "long risk text " * 20]          # real Item 1A
-    starts = find_section_starts(texts, [False] * len(texts))
+    starts = find_section_starts(texts)
     assert starts == {2: "Item 1", 4: "Item 1A"}
 
 
 def test_running_headers_and_cross_references_are_not_headings():
     texts = ["Item 8", "Item 1B, 1C", "See Item 7 of this Form 10-K for details.", "ITEM 8. FINANCIAL STATEMENTS", "x" * 50]
-    assert find_section_starts(texts, [False] * len(texts)) == {3: "Item 8"}
+    assert find_section_starts(texts) == {3: "Item 8"}
 
 
 def test_noise_patterns_cover_both_companies():
@@ -93,3 +93,24 @@ def test_parse_single_filing_end_to_end(tmp_path, monkeypatch):
     assert any(n.metadata["element_type"] == "table" and "Total net sales | 416,161" in n.text for n in by_section["Item 7"])
     assert all("Form 10-K |" not in n.text for n in nodes)  # footer removed
     assert "filing_url" in nodes[0].excluded_embed_metadata_keys
+
+
+def test_tagged_numbers_skip_hidden_facts_short_values_and_entities():
+    html = ('<ix:header><ix:nonFraction name="a">999,999</ix:nonFraction></ix:header>'
+            '<td><ix:nonFraction name="us-gaap:Revenues">416,161</ix:nonFraction></td>'
+            '<td><ix:nonFraction name="b"><span>93,736</span></ix:nonFraction></td>'
+            '<td><ix:nonFraction name="c">25</ix:nonFraction></td>'
+            '<td><ix:nonFraction name="d">&#8212;</ix:nonFraction></td>')
+    assert parsing.tagged_numbers(html) == {"416,161", "93,736"}
+
+
+def test_headings_laid_out_as_tables_start_sections(tmp_path, monkeypatch):
+    # Amazon puts each item heading in a one-row layout table
+    monkeypatch.setattr(parsing, "count_tokens", lambda text: len(text.split()))
+    html = FILING_HTML.replace("<p>Item 1A. Risk Factors</p>\n<p>The Company's",
+                               "<table><tr><td>Item&nbsp;1A. Risk Factors</td></tr></table>\n<p>The Company's")
+    assert "<table><tr><td>Item&nbsp;1A" in html
+    path = tmp_path / "primary-document.html"
+    path.write_text(html, encoding="utf-8")
+    nodes = parsing.parse_single_filing(str(path), {"company": "AMZN", "year": "2025"})
+    assert [n.metadata["section"] for n in nodes if "supply chains" in n.text] == ["Item 1A"]

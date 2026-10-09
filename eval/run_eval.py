@@ -91,7 +91,8 @@ def eval_llm(factory, refresh: bool = False) -> CachedChatLLM:
     llm.temperature = 0.0
     llm.max_retries = 0  # retries are handled by CachedChatLLM
     # Optional separate key so evaluation runs do not use up the deployed app's Groq quota
-    if os.getenv("EVAL_GROQ_API_KEY"):
+    from app.llm_provider import llm_provider
+    if llm_provider() == "groq" and os.getenv("EVAL_GROQ_API_KEY"):
         llm.api_key = os.getenv("EVAL_GROQ_API_KEY")
     return CachedChatLLM(llm, refresh)
 

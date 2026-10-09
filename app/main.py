@@ -9,8 +9,10 @@ from fastapi.requests import Request
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from app.answer_cache import AnswerCache
+from app.daily_limit import DailyLimit
 from app.llm_errors import LLMRateLimited, LLMUnavailable
-from app.router.router_agent import get_catalog, load_index_from_qdrant
+from app.router.router_agent import COMPANY_NAMES, MAX_COMPANIES_PER_QUESTION, get_catalog, load_index_from_qdrant
 from app.synthesizer.synthesizer_agent import answer_query, build_sources
 
 logger = logging.getLogger("uvicorn.error")
@@ -18,6 +20,8 @@ logger = logging.getLogger("uvicorn.error")
 
 TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "false").lower() == "true"
 BACKEND_API_KEY = os.getenv("BACKEND_API_KEY")
+# New answers per UTC day across all users (0 = no limit), see app/daily_limit.py
+DAILY_ANSWER_LIMIT = int(os.getenv("DAILY_ANSWER_LIMIT", "50"))
 
 # The backend only ever talks to the Streamlit frontend, so the connection IP is the frontend's
 # and every end user would share one rate-limit bucket. The frontend therefore sends the end
@@ -51,6 +55,7 @@ class Source(BaseModel):
     year: str
     section: str
     url: str | None = None  # the filing document on sec.gov
+    passage_url: str | None = None  # the same document, scrolled to the cited passage where supported
     snippet: str
 
 class AgentResponse(BaseModel):
@@ -60,6 +65,8 @@ class AgentResponse(BaseModel):
     years: list[str] | None = None
     source_urls: dict[str, str] | None = None  # EDGAR company search links, kept for compatibility
     sources: list[Source] | None = None  # the filing excerpts the answer cites
+    cached: bool = False  # served from the answer cache, no LLM call
+    fallback_model: bool = False  # answered by the smaller model because the main one was rate limited
 
 # just building visualization for pdfs, it returns url's under answer box
 def build_edgar_source_urls(companies: list[str] | None, year: str | None) -> dict[str, str] | None:
@@ -79,6 +86,8 @@ def build_edgar_source_urls(companies: list[str] | None, year: str | None) -> di
 async def lifespan(app:FastAPI):
     app.state.index = load_index_from_qdrant() # runs only one time before backend starting
     get_catalog(app.state.index)  # read the indexed companies/years/sections once, up front
+    app.state.answer_cache = AnswerCache()
+    app.state.daily_limit = DailyLimit(DAILY_ANSWER_LIMIT)
     yield
     # Do nothing special for shut down
 
@@ -106,22 +115,59 @@ async def health(request: Request):
     return {"status": "ok", "index_loaded": getattr(request.app.state, "index", None) is not None}
 
 
+class CatalogCompany(BaseModel):
+    ticker: str
+    name: str
+    years: list[str]
+
+class CatalogResponse(BaseModel):
+    companies: list[CatalogCompany]
+    max_companies_per_question: int
+
+
+# What can be asked about, for the UI's list of available filings. Read from the index, so the
+# list follows whatever was indexed.
+@app.get("/catalog", response_model=CatalogResponse, dependencies=[Depends(verify_internal_key)])
+@limiter.limit("30/minute")
+async def catalog(request: Request):
+    indexed = get_catalog(request.app.state.index)
+    return CatalogResponse(
+        companies=[CatalogCompany(ticker=c, name=COMPANY_NAMES.get(c, c).split(",")[0],
+                                  years=[y for f, y in indexed.filings if f == c])
+                   for c in indexed.companies],
+        max_companies_per_question=MAX_COMPANIES_PER_QUESTION,
+    )
+
+
 @app.post("/query", response_model=AgentResponse, dependencies=[Depends(verify_internal_key)])
 @limiter.limit("10/minute")
 async def financial_query(request: Request, body: QueryRequest):
     index = request.app.state.index
+    cache = request.app.state.answer_cache
+    cached = cache.get(body.query)
+    if cached is not None:
+        logger.info("Answered from cache")
+        return cached.model_copy(update={"cached": True})
+    daily_limit = request.app.state.daily_limit
+    if not daily_limit.try_acquire():
+        raise HTTPException(status_code=429, detail="The daily question limit has been reached. Please try again "
+                                                    "tomorrow; the example questions still work.")
     try:
-        # The pipeline is blocking (Groq HTTP calls, CPU embedding, local Qdrant). Running it in
+        # The pipeline is blocking (LLM HTTP calls, CPU embedding, local Qdrant). Running it in
         # a worker thread keeps the event loop free for other requests such as /health.
         final_answer, filters, nodes = await run_in_threadpool(answer_query, body.query, index)
-    except LLMRateLimited:
-        logger.warning("Groq rate limit reached")
-        raise HTTPException(status_code=429, detail="The language model is busy. Please try again in a minute.")
-    except LLMUnavailable:
-        logger.exception("Groq unavailable")
-        raise HTTPException(status_code=503, detail="The language model service is unavailable. Please try again shortly.")
-    except Exception:
-        # catch any error during synthesis and return 502 Bad Gateway 
+    except Exception as error:
+        daily_limit.release()  # no answer was produced, so it does not count
+        if isinstance(error, LLMRateLimited):
+            logger.warning("LLM rate limit reached: %s", error)
+            if error.daily:
+                raise HTTPException(status_code=429, detail="Today's free model quota is used up. Please try again "
+                                                            "tomorrow; the example questions still work.")
+            raise HTTPException(status_code=429, detail="The language model is busy. Please try again in a minute.")
+        if isinstance(error, LLMUnavailable):
+            logger.exception("LLM provider unavailable")
+            raise HTTPException(status_code=503, detail="The language model service is unavailable. Please try again shortly.")
+        # catch any error during synthesis and return 502 Bad Gateway
         logger.exception("financial_query failed")
         raise HTTPException(status_code=502, detail="Failed to generate an answer. Please try again.")
     companies = filters.get("companies")
@@ -129,11 +175,16 @@ async def financial_query(request: Request, body: QueryRequest):
     # Only link filings that are actually indexed (the router also reports non-indexed tickers), and
     # none at all when the answer is a fixed "not covered" or "out of scope" message
     indexed = [] if filters.get("fixed_answer") else [c for c in companies or [] if c in get_catalog(index).companies]
-    return AgentResponse(
+    response = AgentResponse(
         answer=final_answer,
         companies=companies,
         year=year,
         years=filters.get("years"),
         source_urls=build_edgar_source_urls(indexed, year),
         sources=build_sources(final_answer, nodes),
+        fallback_model=bool(filters.get("fallback_model")),
     )
+    # Errors raise above, so only real answers are cached
+    cache.put(body.query, response)
+    logger.info("New answer (%d of %d today)", daily_limit.used, daily_limit.limit)
+    return response
