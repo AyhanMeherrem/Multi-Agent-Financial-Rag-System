@@ -11,7 +11,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.answer_cache import AnswerCache
 from app.llm_errors import LLMRateLimited, LLMUnavailable
-from app.router.router_agent import get_catalog, load_index_from_qdrant
+from app.router.router_agent import COMPANY_NAMES, MAX_COMPANIES_PER_QUESTION, get_catalog, load_index_from_qdrant
 from app.synthesizer.synthesizer_agent import answer_query, build_sources
 
 logger = logging.getLogger("uvicorn.error")
@@ -107,6 +107,30 @@ def verify_internal_key(x_internal_key: str | None = Header(None)):
 @app.get("/health")
 async def health(request: Request):
     return {"status": "ok", "index_loaded": getattr(request.app.state, "index", None) is not None}
+
+
+class CatalogCompany(BaseModel):
+    ticker: str
+    name: str
+    years: list[str]
+
+class CatalogResponse(BaseModel):
+    companies: list[CatalogCompany]
+    max_companies_per_question: int
+
+
+# What can be asked about, for the UI's list of available filings. Read from the index, so the
+# list follows whatever was indexed.
+@app.get("/catalog", response_model=CatalogResponse, dependencies=[Depends(verify_internal_key)])
+@limiter.limit("30/minute")
+async def catalog(request: Request):
+    indexed = get_catalog(request.app.state.index)
+    return CatalogResponse(
+        companies=[CatalogCompany(ticker=c, name=COMPANY_NAMES.get(c, c).split(",")[0],
+                                  years=[y for f, y in indexed.filings if f == c])
+                   for c in indexed.companies],
+        max_companies_per_question=MAX_COMPANIES_PER_QUESTION,
+    )
 
 
 @app.post("/query", response_model=AgentResponse, dependencies=[Depends(verify_internal_key)])

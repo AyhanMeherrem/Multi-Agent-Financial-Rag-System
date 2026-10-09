@@ -56,6 +56,7 @@ class IndexCatalog:
     sections: tuple
     # (company, year) filings whose Item 8 only refers to the financial statements in Item 15 (NVDA)
     financials_in_item_15: frozenset = frozenset()
+    filings: tuple = ()  # every indexed (company, year)
 
 
 _catalog_cache: dict = {}
@@ -78,6 +79,7 @@ def get_catalog(index: VectorStoreIndex) -> IndexCatalog:
             financials_in_item_15=frozenset(
                 (c, y) for (c, y, s), n in chunks.items()
                 if s == "Item 15" and n >= 20 and chunks[(c, y, "Item 8")] <= 2),
+            filings=tuple(sorted({(c, y) for c, y, _ in chunks if c and y and y.isdigit()})),
         )
     return _catalog_cache[key]
 

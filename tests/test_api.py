@@ -4,6 +4,7 @@ from starlette.requests import Request
 
 import app.main as main
 from app.llm_errors import LLMRateLimited, LLMUnavailable
+from app.router.router_agent import IndexCatalog
 from tests.helpers import make_node
 
 HEADERS = {"X-Internal-Key": "test-key"}
@@ -116,3 +117,14 @@ def test_errors_are_not_cached(client, monkeypatch):
     monkeypatch.setattr(main, "answer_query", fake_answer_query)
     response = client.post("/query", json={"query": "q"}, headers=HEADERS)
     assert response.status_code == 200 and response.json()["cached"] is False
+
+
+def test_catalog_lists_indexed_companies_and_years(client, monkeypatch, catalog):
+    catalog = IndexCatalog(companies=("AAPL", "NVDA"), years=("2024", "2025"), sections=catalog.sections,
+                           filings=(("AAPL", "2024"), ("AAPL", "2025"), ("NVDA", "2025")))
+    monkeypatch.setattr(main, "get_catalog", lambda index: catalog)
+    assert client.get("/catalog").status_code == 401
+    body = client.get("/catalog", headers=HEADERS).json()
+    assert body == {"companies": [{"ticker": "AAPL", "name": "Apple", "years": ["2024", "2025"]},
+                                  {"ticker": "NVDA", "name": "NVIDIA", "years": ["2025"]}],
+                    "max_companies_per_question": 3}
