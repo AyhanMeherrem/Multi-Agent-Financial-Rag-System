@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass
 from itertools import product
 
@@ -28,6 +29,15 @@ TOP_K_PER_COMBINATION = 8
 # key, and ~16k characters is ~4k tokens, which leaves room for the prompt and the answer.
 MAX_CONTEXT_CHUNKS = 16
 MAX_CONTEXT_CHARS = 16000
+# Each company and year is a separate search sharing that context, so more than three companies
+# (six filings over two years) would leave about one excerpt per filing
+MAX_COMPANIES_PER_QUESTION = 3
+
+# Names for the router prompt, so "Alphabet" or "Facebook" map to the indexed ticker
+COMPANY_NAMES = {"AAPL": "Apple", "MSFT": "Microsoft", "NVDA": "NVIDIA", "GOOGL": "Alphabet, Google",
+                 "AMZN": "Amazon", "META": "Meta Platforms, Facebook"}
+# Other tickers the model may use for an indexed company
+TICKER_ALIASES = {"GOOG": "GOOGL", "FB": "META"}
 
 SECTION_NAMES = {
     "Item 1": "Business", "Item 1A": "Risk Factors", "Item 1C": "Cybersecurity", "Item 2": "Properties",
@@ -44,6 +54,9 @@ class IndexCatalog:
     companies: tuple
     years: tuple
     sections: tuple
+    # (company, year) filings whose Item 8 only refers to the financial statements in Item 15 (NVDA)
+    financials_in_item_15: frozenset = frozenset()
+    filings: tuple = ()  # every indexed (company, year)
 
 
 _catalog_cache: dict = {}
@@ -58,10 +71,15 @@ def get_catalog(index: VectorStoreIndex) -> IndexCatalog:
         def values(field):
             return tuple(sorted({p.payload[field] for p in points if p.payload.get(field)}))
 
+        chunks = Counter((p.payload.get("company"), p.payload.get("year"), p.payload.get("section")) for p in points)
         _catalog_cache[key] = IndexCatalog(
             companies=values("company"),
             years=tuple(y for y in values("year") if y.isdigit()),
             sections=tuple(s for s in values("section") if s in SECTION_NAMES),
+            financials_in_item_15=frozenset(
+                (c, y) for (c, y, s), n in chunks.items()
+                if s == "Item 15" and n >= 20 and chunks[(c, y, "Item 8")] <= 2),
+            filings=tuple(sorted({(c, y) for c, y, _ in chunks if c and y and y.isdigit()})),
         )
     return _catalog_cache[key]
 
@@ -83,7 +101,8 @@ class RouterDecision(BaseModel):
     @field_validator("companies", mode="before")
     @classmethod
     def _tickers(cls, v):
-        return list(dict.fromkeys(str(c).strip().upper() for c in as_list(v) if str(c).strip()))
+        tickers = (str(c).strip().upper() for c in as_list(v) if str(c).strip())
+        return list(dict.fromkeys(TICKER_ALIASES.get(t, t) for t in tickers))
 
     @field_validator("years", mode="before")
     @classmethod
@@ -115,12 +134,13 @@ def get_router_llm() -> Groq:
 
 def build_router_prompt(catalog: IndexCatalog) -> str:
     sections = "\n".join(f'        - "{s}": {SECTION_NAMES[s]}' for s in catalog.sections)
+    companies = ", ".join(f"{c} ({COMPANY_NAMES[c]})" if c in COMPANY_NAMES else c for c in catalog.companies)
     return f"""You are the query router for a search system over SEC 10-K filings.
-        Indexed companies: {", ".join(catalog.companies)}. Indexed fiscal years: {", ".join(catalog.years)}.
+        Indexed companies: {companies}. Indexed fiscal years: {", ".join(catalog.years)}.
 
         Return a JSON object with exactly these keys:
         - "companies": tickers of every company the question asks about, including companies that are not
-          indexed (for example GOOGL for Alphabet, TSLA for Tesla). Empty list if no company is named.
+          indexed (for example TSLA for Tesla, NFLX for Netflix). Empty list if no company is named.
         - "years": every fiscal year the question asks about as 4-digit strings, including years that are not
           indexed. "Between 2024 and 2025" or "change from 2024 to 2025" means both years. Empty list if none.
         - "sections": the section most likely to contain the answer. Add a second section only when the
@@ -135,7 +155,8 @@ def build_router_prompt(catalog: IndexCatalog) -> str:
         - Exact figures from the income statement, balance sheet or cash flow statement (net income, total
           revenue or net sales, EPS, operating income, R&D expense, gross margin in dollars) and notes to the
           financial statements -> "Item 8".
-        - Explanations of changes, product or segment revenue (iPhone, Services, Microsoft Cloud, Azure),
+        - Explanations of changes, product or segment revenue (iPhone, Services, Microsoft Cloud, Azure,
+          NVIDIA Data Center, Google Cloud, AWS, Meta Reality Labs),
           gross margin percentage, tax rate, liquidity, share repurchases and dividends, acquisitions -> "Item 7".
         - Products, services, segments, employees and strategy -> "Item 1".
         - Risks -> "Item 1A". Cybersecurity governance and incidents -> "Item 1C". Properties and
@@ -189,6 +210,9 @@ def unsupported_answer(decision: RouterDecision, catalog: IndexCatalog) -> str |
     if missing_companies or missing_years:
         missing = ", ".join(missing_companies + [f"fiscal year {y}" for y in missing_years])
         return f"The indexed filings do not include {missing}. {available}"
+    if len(decision.companies) > MAX_COMPANIES_PER_QUESTION:
+        return (f"I can compare at most {MAX_COMPANIES_PER_QUESTION} companies in one question. "
+                f"Please ask about up to {MAX_COMPANIES_PER_QUESTION} of: {', '.join(catalog.companies)}.")
     return None
 
 
@@ -222,7 +246,9 @@ def retrieve_nodes(query_string: str, index: VectorStoreIndex, decision: RouterD
     # One Qdrant metadata filter can only AND exact matches, so each (company, year, section)
     # combination is a separate search. The query is embedded once and reused for all of them.
     bundle = QueryBundle(query_str=query_string, embedding=index._embed_model.get_query_embedding(query_string))
-    per_combination = [get_sec_retriever(index, c, y, s).retrieve(bundle) for c, y, s in product(companies, years, sections)]
+    combinations = [(c, y, "Item 15" if s == "Item 8" and (c, y) in catalog.financials_in_item_15 else s)
+                    for c, y, s in product(companies, years, sections)]
+    per_combination = [get_sec_retriever(index, c, y, s).retrieve(bundle) for c, y, s in combinations]
 
     # Take results rank by rank across combinations (every combination's best hit first) so that one
     # company or year cannot crowd out the other in a comparison, skip duplicates, stop at the cap.

@@ -20,3 +20,9 @@ def chat(llm, messages):
         raise LLMRateLimited(str(e)) from e
     except (openai.APIConnectionError, openai.InternalServerError) as e:  # includes timeouts and 5xx
         raise LLMUnavailable(str(e)) from e
+    except openai.BadRequestError as e:
+        # Groq answers every request with this 400 once the organization's monthly spend limit is reached
+        body = e.body if isinstance(e.body, dict) else {}
+        if "blocked_api_access" in (e.code, (body.get("error") or {}).get("code")):
+            raise LLMUnavailable(str(e)) from e
+        raise

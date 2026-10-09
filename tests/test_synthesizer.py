@@ -6,7 +6,7 @@ from tests.helpers import FakeLLM, make_node
 
 def test_prompt_fences_excerpts_with_source_labels():
     prompt = build_system_prompt([make_node("Total net sales | 391,035", company="AAPL", year="2024", section="Item 8")])
-    assert '<excerpt source="[AAPL | FY2024 | Item 8]">' in prompt
+    assert '<excerpt source="[AAPL | FY2024 | Item 8]" fiscal_year_end=' in prompt
     assert "<excerpts>" in prompt and "</excerpts>" in prompt
     assert REFUSAL_MESSAGE in prompt
 

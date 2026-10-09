@@ -460,6 +460,28 @@ st.markdown("""
     div[data-testid="stTextInput"] input {
         font-size: 1rem;
     }
+    .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin: 0.25rem 0 0.5rem 0;
+    }
+    .chip {
+        border: 1px solid #2d3348;
+        background-color: #1a1e2b;
+        border-radius: 999px;
+        padding: 0.25rem 0.75rem;
+        font-size: 0.85rem;
+        color: #d6dbe6;
+    }
+    .chip b {
+        color: #8ba3ff;
+        margin-right: 0.35rem;
+    }
+    .chip span {
+        color: #6b7385;
+        margin-left: 0.35rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -545,13 +567,16 @@ HERO_ANIMATION = """
 """
 
 url = os.getenv("BACKEND_URL", "http://127.0.0.1:8000/query")
+catalog_url = url.rsplit("/query", 1)[0] + "/catalog"
 backend_api_key = os.getenv("BACKEND_API_KEY", "")
 
-COMPANY_NAMES = {"AAPL": "Apple", "MSFT": "Microsoft"}
-INDEXED_YEARS = ["2024", "2025"]
+# Shown while the backend is asleep or unreachable; the live list comes from /catalog
+FALLBACK_CATALOG = {"companies": [{"ticker": t, "name": n, "years": ["2024", "2025"]} for t, n in [
+    ("AAPL", "Apple"), ("AMZN", "Amazon"), ("GOOGL", "Alphabet"), ("META", "Meta Platforms"),
+    ("MSFT", "Microsoft"), ("NVDA", "NVIDIA")]], "max_companies_per_question": 3}
 EXAMPLE_QUERIES = [
-    "Compare Apple's and Microsoft's total net revenue for fiscal year 2024.",
-    "How did Apple's net income change between fiscal 2024 and fiscal 2025?",
+    "Compare NVIDIA's and Meta's net income for fiscal year 2025.",
+    "How did Amazon's net income change from 2024 to 2025?",
     "What were Microsoft's primary cybersecurity risks in 2024?",
 ]
 FEATURES = [
@@ -598,6 +623,23 @@ def end_user_ip() -> str | None:
     if forwarded_for:
         return forwarded_for.split(",")[-1].strip()
     return st.context.ip_address
+
+
+# The index only changes with a new deployment, so one successful answer is kept for an hour. A
+# failure raises and is not cached. The short timeout keeps a sleeping backend from holding up the
+# page (the request still wakes it up for the first question).
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_catalog() -> dict:
+    response = requests.get(catalog_url, headers={"X-Internal-Key": backend_api_key}, timeout=3)
+    response.raise_for_status()
+    return response.json()
+
+
+def load_catalog() -> dict:
+    try:
+        return fetch_catalog()
+    except requests.exceptions.RequestException:
+        return FALLBACK_CATALOG
 
 
 def ask_backend(question: str) -> tuple[dict | None, str | None]:
@@ -656,8 +698,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-companies = " · ".join(f"{name} ({ticker})" for ticker, name in COMPANY_NAMES.items())
-coverage = f"Covering {companies} · fiscal years {INDEXED_YEARS[0]}–{INDEXED_YEARS[-1]}"
+available = load_catalog()
+companies = " · ".join(c["name"] for c in available["companies"])
+years = sorted({y for c in available["companies"] for y in c["years"]})
+coverage = f"Covering {companies}" + (f" · fiscal years {years[0]}–{years[-1]}" if years else "")
+coverage += f" · up to {available['max_companies_per_question']} companies per question"
 badge = '<div class="hero-badge"><span class="dot"></span>AI-POWERED RESEARCH</div>'
 if started:
     st.markdown(
