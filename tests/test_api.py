@@ -149,3 +149,11 @@ def test_failed_requests_do_not_use_the_daily_limit(client, monkeypatch):
     assert client.post("/query", json={"query": "q"}, headers=HEADERS).status_code == 503
     monkeypatch.setattr(main, "answer_query", fake_answer_query)
     assert client.post("/query", json={"query": "q"}, headers=HEADERS).status_code == 200
+
+
+def test_daily_model_quota_gets_its_own_message(client, monkeypatch):
+    def failing(query, index):
+        raise LLMRateLimited("Rate limit reached on tokens per day (TPD)")
+    monkeypatch.setattr(main, "answer_query", failing)
+    response = client.post("/query", json={"query": "q"}, headers=HEADERS)
+    assert response.status_code == 429 and "quota is used up" in response.json()["detail"]

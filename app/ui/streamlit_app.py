@@ -653,6 +653,13 @@ def ask_backend(question: str) -> tuple[dict | None, str | None]:
         response.raise_for_status()
     except requests.exceptions.HTTPError:
         logger.warning("Backend returned HTTP %s", response.status_code)
+        # The backend's own 429/503 messages (e.g. "today's quota is used up") are written for visitors
+        try:
+            detail = response.json().get("detail") if response.status_code in (429, 503) else None
+        except ValueError:
+            detail = None
+        if isinstance(detail, str):
+            return None, detail
         return None, ERROR_MESSAGES.get(response.status_code,
                                         "Something went wrong while generating the answer. Please try again.")
     except requests.exceptions.RequestException:
@@ -780,6 +787,9 @@ else:
 
             cache_badge = ('<span class="cache-badge" title="This question was asked before, so no model call '
                            'was needed">⚡ from cache</span>') if result.get("cached") else ""
+            if result.get("fallback_model"):
+                cache_badge += ('<span class="cache-badge" title="The main model was busy, so a smaller model '
+                                'wrote this answer">smaller model (high demand)</span>')
             st.markdown(f'<div class="section-label">Answer{cache_badge}</div>', unsafe_allow_html=True)
             with st.container(border=True):
                 st.markdown(number_citations(result["answer"].replace("$", "\\$"), sources))

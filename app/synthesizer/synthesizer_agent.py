@@ -1,12 +1,11 @@
 import logging
-import os
 import re
 from urllib.parse import quote
 
 from dotenv import load_dotenv
 from llama_index.core.llms import ChatMessage, MessageRole
-from llama_index.llms.groq import Groq
-from app.llm_errors import chat
+from app.llm_errors import LLMRateLimited, chat
+from app.llm_provider import get_llm
 from app.router.router_agent import (extract_filters, filters_for_response, get_catalog, retrieve_nodes,
                                      unsupported_answer)
 
@@ -20,17 +19,16 @@ REFUSAL_MESSAGE = "I can only answer questions about the indexed SEC 10-K filing
 CITATION_PATTERN = re.compile(r"\[([A-Z]{1,5})\s*\|\s*FY(\d{4})\s*\|\s*(Item \d{1,2}[A-C]?|General)\]")
 
 
-def get_synthesizer_llm() -> Groq:
+SYNTHESIZER_MODEL = "openai/gpt-oss-120b"
+# Used when the main model hits its Groq rate limit. Groq limits each model separately, so this
+# keeps answering at busy moments, with somewhat weaker answers.
+FALLBACK_MODEL = "openai/gpt-oss-20b"
 
-    #initializing groq lpu
 
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key or api_key == "your_groq_api_key_here":
-        raise ValueError("GROQ_API_KEY is missing or unconfigured in .env file!")
+def get_synthesizer_llm(model: str = SYNTHESIZER_MODEL):
     # Medium reasoning effort: at "low" the model missed figures in tables deep in a 16-excerpt
     # context and wrongly answered that they were not in the filings (measured with the eval harness)
-    return Groq(model="openai/gpt-oss-120b", api_key=api_key, max_retries=3, timeout=60.0,
-                additional_kwargs={"reasoning_effort": "medium"})
+    return get_llm(model, reasoning_effort="medium")
 
 
 def source_label(metadata: dict) -> str:
@@ -172,7 +170,12 @@ def answer_query(query_str: str, index):
     if fixed_answer:
         return fixed_answer, {**filters, "fixed_answer": True}, []
     nodes = retrieve_nodes(query_str, index, decision, catalog)
-    answer_text = generate_answer(query_str, nodes)
+    try:
+        answer_text = generate_answer(query_str, nodes)
+    except LLMRateLimited as e:
+        logger.warning("%s rate limited (%s); answering with %s", SYNTHESIZER_MODEL, e, FALLBACK_MODEL)
+        answer_text = generate_answer(query_str, nodes, llm=get_synthesizer_llm(FALLBACK_MODEL))
+        filters = {**filters, "fallback_model": True}
     logger.debug("Filters %s, answer: %s", filters, answer_text)
     return answer_text, filters, nodes
 

@@ -67,3 +67,25 @@ def test_passage_url_targets_the_start_of_the_paragraph():
     assert passage_url("https://www.sec.gov/x.htm", text) == ("https://www.sec.gov/x.htm#:~:text=The%20Company%27s%20"
                                                              "operations%20and%20performance%20depend%20significantly%20on")
     assert passage_url(None, text) is None
+
+
+def test_rate_limited_main_model_falls_back_to_the_smaller_one(monkeypatch, catalog):
+    import app.synthesizer.synthesizer_agent as synth
+    from app.llm_errors import LLMRateLimited
+    from app.router.router_agent import RouterDecision
+
+    monkeypatch.setattr(synth, "get_catalog", lambda index: catalog)
+    monkeypatch.setattr(synth, "extract_filters", lambda q, c: RouterDecision(companies=["AAPL"], years=["2024"]))
+    monkeypatch.setattr(synth, "retrieve_nodes", lambda q, i, d, c: [make_node("Total net sales | 391,035")])
+    used = []
+
+    def fake_generate(query, nodes, llm=None):
+        used.append(llm.model if llm else synth.SYNTHESIZER_MODEL)
+        if llm is None:
+            raise LLMRateLimited("Rate limit reached on tokens per minute (TPM)")
+        return "Net sales were 391,035 million [AAPL | FY2024 | Item 8]."
+    monkeypatch.setattr(synth, "generate_answer", fake_generate)
+    monkeypatch.setenv("GROQ_API_KEY", "test")
+    answer, filters, _ = synth.answer_query("Apple net sales 2024", index=None)
+    assert used == [synth.SYNTHESIZER_MODEL, synth.FALLBACK_MODEL]
+    assert answer.startswith("Net sales") and filters["fallback_model"] is True

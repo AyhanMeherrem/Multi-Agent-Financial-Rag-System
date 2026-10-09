@@ -66,6 +66,7 @@ class AgentResponse(BaseModel):
     source_urls: dict[str, str] | None = None  # EDGAR company search links, kept for compatibility
     sources: list[Source] | None = None  # the filing excerpts the answer cites
     cached: bool = False  # served from the answer cache, no LLM call
+    fallback_model: bool = False  # answered by the smaller model because the main one was rate limited
 
 # just building visualization for pdfs, it returns url's under answer box
 def build_edgar_source_urls(companies: list[str] | None, year: str | None) -> dict[str, str] | None:
@@ -158,7 +159,10 @@ async def financial_query(request: Request, body: QueryRequest):
     except Exception as error:
         daily_limit.release()  # no answer was produced, so it does not count
         if isinstance(error, LLMRateLimited):
-            logger.warning("Groq rate limit reached")
+            logger.warning("Groq rate limit reached: %s", error)
+            if error.daily:
+                raise HTTPException(status_code=429, detail="Today's free model quota is used up. Please try again "
+                                                            "tomorrow; the example questions still work.")
             raise HTTPException(status_code=429, detail="The language model is busy. Please try again in a minute.")
         if isinstance(error, LLMUnavailable):
             logger.exception("Groq unavailable")
@@ -178,6 +182,7 @@ async def financial_query(request: Request, body: QueryRequest):
         years=filters.get("years"),
         source_urls=build_edgar_source_urls(indexed, year),
         sources=build_sources(final_answer, nodes),
+        fallback_model=bool(filters.get("fallback_model")),
     )
     # Errors raise above, so only real answers are cached
     cache.put(body.query, response)

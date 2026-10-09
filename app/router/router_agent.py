@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -13,12 +12,12 @@ from llama_index.core.retrievers import VectorIndexRetriever
 from llama_index.core.schema import QueryBundle
 from llama_index.core.vector_stores import ExactMatchFilter, MetadataFilters
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.llms.groq import Groq
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from pydantic import BaseModel, ValidationError, field_validator
 from qdrant_client import QdrantClient
 
 from app.llm_errors import chat
+from app.llm_provider import get_llm
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -119,17 +118,11 @@ class RouterDecision(BaseModel):
         return list(dict.fromkeys(f"Item {m.group(1).upper()}" for m in found if m))[:3]
 
 
-def get_router_llm() -> Groq:
-    # Initialize Groq (gpt-oss-20b) for parsing and routing. It is a reasoning model;
-    # low effort keeps latency and token use down for this small extraction task.
-    # JSON mode makes Groq reject any output that is not a single JSON object.
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key or api_key == "your_groq_api_key_here":
-        raise ValueError(
-            "GROQ_API_KEY is missing or unconfigured in .env file!"
-        )
-    return Groq(model="openai/gpt-oss-20b", api_key=api_key, temperature=0.0, max_retries=3, timeout=60.0,
-                additional_kwargs={"reasoning_effort": "low", "response_format": {"type": "json_object"}})
+def get_router_llm():
+    # gpt-oss-20b for parsing and routing. It is a reasoning model; low effort keeps latency and
+    # token use down for this small extraction task. JSON mode makes the API reject any output that
+    # is not a single JSON object.
+    return get_llm("openai/gpt-oss-20b", reasoning_effort="low", temperature=0.0, json_mode=True)
 
 
 def build_router_prompt(catalog: IndexCatalog) -> str:

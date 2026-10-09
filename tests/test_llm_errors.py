@@ -28,3 +28,13 @@ class FailingLLM:
 def test_groq_errors_are_mapped(error, expected):
     with pytest.raises(expected):
         chat(FailingLLM(error), [])
+
+
+def test_daily_limits_are_told_apart_from_per_minute_limits():
+    assert LLMRateLimited("Rate limit reached ... on tokens per day (TPD): Limit 200000").daily
+    assert not LLMRateLimited("Rate limit reached ... on tokens per minute (TPM): Limit 8000").daily
+
+
+def test_openrouter_out_of_credits_is_reported_as_unavailable():
+    with pytest.raises(LLMUnavailable):
+        chat(FailingLLM(api_error(openai.APIStatusError, 402, "insufficient_credits")), [])
