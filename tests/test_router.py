@@ -2,7 +2,7 @@ import json
 from types import SimpleNamespace
 
 import app.router.router_agent as router
-from app.router.router_agent import RouterDecision, extract_filters, filing_years_for, unsupported_answer
+from app.router.router_agent import IndexCatalog, RouterDecision, extract_filters, filing_years_for, unsupported_answer
 from tests.helpers import FakeLLM, make_node
 
 
@@ -40,7 +40,7 @@ def test_router_prompt_lists_only_indexed_values(catalog):
     llm = FakeLLM("{}")
     extract_filters("question", catalog, llm=llm)
     prompt = llm.messages[0].content
-    assert "AAPL, MSFT" in prompt and "2024, 2025" in prompt
+    assert "AAPL (Apple), MSFT (Microsoft)" in prompt and "2024, 2025" in prompt
     assert '"Item 9A"' not in prompt  # not in this catalog
 
 
@@ -51,7 +51,7 @@ def test_prior_years_map_to_filings_that_contain_them(catalog):
 
 
 def test_unsupported_answer(catalog):
-    assert "do not include GOOGL" in unsupported_answer(RouterDecision(companies=["GOOGL"]), catalog)
+    assert "do not include TSLA" in unsupported_answer(RouterDecision(companies=["TSLA"]), catalog)
     assert "fiscal year 2021" in unsupported_answer(RouterDecision(companies=["AAPL"], years=["2021"]), catalog)
     assert "I can only answer" in unsupported_answer(RouterDecision(in_scope=False), catalog)
     assert unsupported_answer(RouterDecision(companies=["AAPL"], years=["2023", "2024"]), catalog) is None
@@ -117,6 +117,25 @@ def test_legal_questions_also_search_item_8(monkeypatch, catalog):
 
 
 def test_unknown_values_are_not_used_as_filters(monkeypatch, catalog):
-    decision = RouterDecision(companies=["GOOGL"], sections=["Item 99"])
+    decision = RouterDecision(companies=["TSLA"], sections=["Item 99"])
     _, calls = run_retrieval(monkeypatch, catalog, decision, {})
     assert calls == [(None, None, None)]
+
+
+def test_item_8_searches_item_15_where_the_financial_statements_are(monkeypatch, catalog):
+    catalog = IndexCatalog(companies=("AAPL", "NVDA"), years=("2025",), sections=catalog.sections,
+                           financials_in_item_15=frozenset({("NVDA", "2025")}))
+    decision = RouterDecision(companies=["AAPL", "NVDA"], years=["2025"], sections=["Item 8"])
+    _, calls = run_retrieval(monkeypatch, catalog, decision, {})
+    assert calls == [("AAPL", "2025", "Item 8"), ("NVDA", "2025", "Item 15")]
+
+
+def test_at_most_three_companies_per_question(catalog):
+    catalog = IndexCatalog(companies=("AAPL", "AMZN", "GOOGL", "META", "MSFT", "NVDA"), years=("2024", "2025"),
+                           sections=catalog.sections)
+    assert unsupported_answer(RouterDecision(companies=["AAPL", "MSFT", "NVDA"]), catalog) is None
+    assert "at most 3 companies" in unsupported_answer(RouterDecision(companies=["AAPL", "MSFT", "NVDA", "META"]), catalog)
+
+
+def test_ticker_aliases_map_to_indexed_tickers():
+    assert RouterDecision(companies=["goog", "FB"]).companies == ["GOOGL", "META"]

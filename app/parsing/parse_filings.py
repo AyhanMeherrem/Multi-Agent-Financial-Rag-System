@@ -9,6 +9,7 @@ import os
 import re
 from collections import defaultdict
 from functools import lru_cache
+from html import unescape
 from typing import List
 
 import lxml.html
@@ -25,6 +26,7 @@ MAX_CHUNK_TOKENS = 450
 MIN_CHUNK_TOKENS = 200
 
 # Metadata that is useful for citations but should not be embedded or shown to the LLM
+MIN_NUMBER_COVERAGE = 0.95  # see number_coverage
 NON_EMBEDDED_KEYS = ["period_end_date", "accession_number", "cik", "filing_url", "element_type"]
 
 # "Item 1A. Risk Factors": a real heading has the item number followed by a title. Running page
@@ -97,6 +99,27 @@ def strip_ixbrl(html: str) -> str:
     return re.sub(r"</?ix:[^>]*>", "", html)
 
 
+# Numbers the filing tags as XBRL facts, e.g. "391,035". Short values (1, 25, ...) are skipped because
+# they match almost any text.
+TAGGED_NUMBER = re.compile(r"<ix:nonFraction[^>]*>(.*?)</ix:nonFraction>", re.S | re.IGNORECASE)
+
+
+def tagged_numbers(html: str) -> set:
+    html = re.sub(r"<ix:header>.*?</ix:header>", "", html, flags=re.S)  # hidden facts are not in the text
+    values = {unescape(re.sub(r"<[^>]+>", "", v)).strip() for v in TAGGED_NUMBER.findall(html)}
+    return {v for v in values if sum(c.isdigit() for c in v) >= 3}
+
+
+def number_coverage(nodes: List[TextNode], html_path: str) -> tuple:
+    # Share of the filing's tagged numbers that made it into its chunks. Low coverage means tables
+    # were dropped or mangled by parsing, which a section check alone would not show.
+    with open(html_path, encoding="utf-8", errors="ignore") as f:
+        expected = tagged_numbers(f.read())
+    text = "\n".join(n.text for n in nodes)
+    missing = sorted(v for v in expected if v not in text)
+    return len(expected) - len(missing), len(expected), missing
+
+
 def is_noise(text: str) -> bool:
     return any(p.match(text) for p in NOISE_PATTERNS)
 
@@ -112,12 +135,13 @@ def is_subheading(element, text: str) -> bool:
     return type(element).__name__ in ("Title", "Text") and len(text) < 120 and not text.endswith((".", ":", ";"))
 
 
-def find_section_starts(texts: List[str], is_table: List[bool]) -> dict:
+def find_section_starts(texts: List[str]) -> dict:
     # Returns {element index: section} for the real "Item N." headings. An item heading can appear
     # several times (table of contents, cross-reference lines); the real one is the occurrence followed
     # by the most text before the next heading, so table-of-contents entries never change the section.
+    # Short tables count too: Amazon lays out each heading as a one-row table.
     candidates = [(i, "Item " + m.group(1).upper()) for i, t in enumerate(texts)
-                  if not is_table[i] and len(t) <= 200 and (m := HEADING_PATTERN.match(t))]
+                  if len(t) <= 200 and (m := HEADING_PATTERN.match(t))]
     best = {}
     for n, (i, section) in enumerate(candidates):
         end = candidates[n + 1][0] if n + 1 < len(candidates) else len(texts)
@@ -185,7 +209,7 @@ def parse_single_filing(html_path: str, base_metadata: dict) -> List[TextNode]:
         elements = partition_html(text=strip_ixbrl(f.read()), include_page_breaks=False)
     texts = [str(e).strip() for e in elements]
     is_table = [type(e).__name__ == "Table" for e in elements]
-    section_starts = find_section_starts(texts, is_table)
+    section_starts = find_section_starts(texts)
 
     nodes: List[TextNode] = []
     section = "General"  # cover page and anything before the first item heading
@@ -284,8 +308,33 @@ if __name__ == "__main__":
         for sec, (count, chars) in sorted(sections.items(), key=lambda kv: (len(kv[0]), kv[0])):
             print(f"  {sec:8s}: {count:4d} chunks {chars:8d} chars")
 
-    # The sections the router relies on most must have real content in every filing
-    for filing, sections in report.items():
+    # The sections the router relies on most must have real content in every filing. Some filings
+    # (NVDA) keep the financial statements in Item 15 and only refer to them from Item 8; retrieval
+    # searches Item 15 for those (see get_catalog in the router).
+    thin = []
+    for filing, sections in sorted(report.items()):
         for sec in ("Item 1", "Item 1A", "Item 7", "Item 8"):
-            assert sections[sec][1] >= 10_000, f"{filing}: {sec} has only {sections[sec][1]} characters"
+            chars = sections[sec][1]
+            if sec == "Item 8" and chars < 10_000:
+                chars = sections["Item 15"][1]
+            if chars < 10_000:
+                thin.append(f"{filing[0]} FY{filing[1]} {sec} ({chars} chars)")
+    assert not thin, f"Sections with too little content: {', '.join(thin)}"
     print("\nSection check passed: Items 1, 1A, 7 and 8 have substantial content in every filing.")
+
+    # Every tagged number should appear in the chunks of its filing
+    by_filing = defaultdict(list)
+    for n in parsed_nodes:
+        by_filing[(n.metadata["company"], n.metadata["year"], n.metadata["accession_number"])].append(n)
+    low = []
+    print()
+    for (company, year, accession), filing_nodes in sorted(by_filing.items()):
+        html_path = os.path.join(BASE_DIR, company, "10-K", accession, "primary-document.html")
+        found, total, missing = number_coverage(filing_nodes, html_path)
+        share = found / total if total else 1.0
+        print(f"{company} FY{year}: {found}/{total} tagged numbers in chunks ({share:.1%})"
+              + (f", e.g. missing {missing[:5]}" if missing else ""))
+        if share < MIN_NUMBER_COVERAGE:
+            low.append(f"{company} FY{year}")
+    assert not low, f"Tagged number coverage below {MIN_NUMBER_COVERAGE:.0%}: {', '.join(low)}"
+    print(f"Number check passed: at least {MIN_NUMBER_COVERAGE:.0%} of tagged numbers are in the chunks of every filing.")
