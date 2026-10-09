@@ -47,7 +47,7 @@ flowchart LR
     C -->|"asked before"| U
     C --> R["Router<br/><i>gpt-oss-20b, JSON mode</i><br/>companies, years, sections"]
     R -->|"not indexed / off-topic"| X["Fixed answer"]
-    R --> S["Filtered search in Qdrant<br/><i>bge-large-en-v1.5, one search per<br/>company / year / section</i>"]
+    R --> S["Hybrid search per company / year / section<br/><i>bge-large-en-v1.5 vectors in Qdrant<br/>+ BM25 keywords, rank fusion</i>"]
     S --> A["Synthesizer<br/><i>gpt-oss-120b</i><br/>cited answer"]
     A --> U["FastAPI backend → Streamlit UI"]
     F["SEC EDGAR 10-K HTML"] --> P["Parsing<br/><i>iXBRL cleanup, item sections,<br/>tables as rows, ~450-token chunks</i>"] --> I["Qdrant index"]
@@ -55,7 +55,7 @@ flowchart LR
 ```
 
 - **Router:** a small model turns the question into a validated filter (companies, fiscal years, 10-K sections, in scope or not). Allowed values are read from the index, so questions about other companies or years get a clear "not in the indexed filings" answer instead of a wrong one.
-- **Retrieval:** Qdrant payload filters restrict the search to the matching filings and sections; comparisons search each company and year separately and merge the results so neither side crowds out the other. For financial statement questions the primary statements (income statement, balance sheet, cash flows) of each filing are also searched on their own, so headline figures are not buried under notes.
+- **Retrieval:** every search runs twice, by meaning (vector search in Qdrant) and by keywords (BM25), and the two rankings are merged with reciprocal rank fusion, so exact terms like "operating income" and the table rows that carry them rank high. Payload filters restrict both to the matching filings and sections; comparisons search each company and year separately and merge the results so neither side crowds out the other. For financial statement questions the primary statements (income statement, balance sheet, cash flows) of each filing are also searched on their own, so headline figures are not buried under notes.
 - **Synthesis:** a larger model answers only from the retrieved excerpts, cites every fact, shows the formula for computed differences and says what is missing when the filings do not contain the answer. When companies with different fiscal year ends are compared, the answer notes the dates.
 - **Models:** both are open-weight gpt-oss models, served through OpenRouter (preferring Groq and Cerebras hosts for speed) or directly by Groq, chosen with `LLM_PROVIDER`.
 
@@ -63,23 +63,25 @@ flowchart LR
 
 Measured on a 62-question golden set whose answers were checked against the raw filings (`eval/`), covering single figures, comparisons, two-year changes, narrative sections, unanswerable questions and prompt injection. Baseline and the two-company column use the first 52 questions (Apple and Microsoft only).
 
-| Metric | Baseline | 2 companies | 6 companies |
-|---|---|---|---|
-| Router: companies, years and sections all correct | 0.67 | 0.98 | 0.97 |
-| Evidence retrieved (hit@k) | 0.59 | 0.81 | 0.80 |
-| Numeric answers correct | 0.70 | 0.85 | 0.89 |
-| Answerable questions wrongly refused | 0.22 | 0.05 | 0.06 |
-| Answers with valid citations | n/a | 1.00 | 1.00 |
-| Unanswerable questions handled / injections resisted | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 1.00 |
+| Metric | Baseline | 2 companies | 6 companies | 6 companies, hybrid search |
+|---|---|---|---|---|
+| Router: companies, years and sections all correct | 0.67 | 0.98 | 0.97 | 0.97 |
+| Evidence retrieved (hit@k) | 0.59 | 0.81 | 0.80 | 0.86 |
+| Rank of the evidence (MRR) | 0.41 | 0.54 | 0.49 | 0.68 |
+| Numeric answers correct | 0.70 | 0.85 | 0.89 | 0.97 |
+| Answerable questions wrongly refused | 0.22 | 0.05 | 0.06 | 0.02 |
+| Answers with valid citations | n/a | 1.00 | 1.00 | 0.98 |
+| Unanswerable questions handled / injections resisted | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 1.00 |
 
-Going from two to six companies first dropped retrieval to 0.69: in large financial statement sections the number-heavy statements ranked below notes that mention the same items. Searching the primary statements of each filing separately, and skipping empty page-header tables, brought it back.
+Going from two to six companies first dropped retrieval to 0.69: in large financial statement sections the number-heavy statements ranked below notes that mention the same items. Searching the primary statements of each filing separately, and skipping empty page-header tables, brought it back. Adding BM25 keyword search next to the vector search then moved the right excerpt to the top of the context far more often (MRR 0.49 → 0.68) and took numeric accuracy to 0.97.
 
 Full results per step are in `eval/results/`.
 
 ## Design decisions
 
 - **Embedded Qdrant baked into the backend image:** the index is about 50 MB and only changes when filings are re-ingested, so no separate database service is needed. The image is rebuilt when the index changes.
-- **Cost control:** repeated questions are answered from an in-memory cache, new answers are capped per day, and the model provider has a prepaid spending limit; a question costs about $0.001.
+- **Cost control:** repeated questions are answered from an in-memory cache, new answers are capped per day, and the model provider has a prepaid spending limit. Measured on OpenRouter, 200 model calls (about 100 questions) cost $0.08, under $0.001 per question; with scale-to-zero hosting the demo costs almost nothing when idle.
+- **BM25 in memory, next to Qdrant:** the keyword index is built from the Qdrant payloads when the backend starts (under a second for ~4,000 chunks), so hybrid search needed no change to the vector store or the index.
 - **Small model for routing, large model for answers:** routing is a short structured task on every question; answering needs careful reading of numbers across many excerpts.
 - **Filters at the vector-store level:** company, year and section are Qdrant payload filters, so a question only searches the filings it is about.
 - **Structure-aware chunking:** chunks follow the 10-K items, tables keep one row per line with their caption, and chunk sizes are counted with the embedding model's own tokenizer.
@@ -95,7 +97,7 @@ Full results per step are in `eval/results/`.
 
 - Six companies and two filing years, 10-K only; at most three companies per question so each one gets enough context.
 - Questions that name no company ("which company earned the most?") search all filings at once and are weaker.
-- The right excerpts usually reach the context but are not ranked first (MRR 0.49); hybrid BM25 + dense retrieval is the next planned improvement.
+- Questions comparing several years still rank their evidence low (MRR 0.27 for two-year questions); a reranker over the fused results is the next candidate.
 - The answer cache, rate limiter and daily cap live in the backend process: they suit a single replica and reset when the backend scales to zero.
 
 ## Running locally
