@@ -705,26 +705,25 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-available = load_catalog()
-companies = " · ".join(c["name"] for c in available["companies"])
-years = sorted({y for c in available["companies"] for y in c["years"]})
-coverage = f"Covering {companies}" + (f" · fiscal years {years[0]}–{years[-1]}" if years else "")
-coverage += f" · up to {available['max_companies_per_question']} companies per question"
-badge = '<div class="hero-badge"><span class="dot"></span>AI-POWERED RESEARCH</div>'
-if started:
-    st.markdown(
-        f'<div class="hero compact">{badge}<h1>Ask the <span>10-K</span></h1><p>{html.escape(coverage)}</p></div>',
-        unsafe_allow_html=True,
-    )
-else:
-    st.markdown(
-        f'<div class="hero">{badge}<h1>Ask the <span>10-K</span>.<br>Get answers you can verify.</h1>'
-        '<p>Plain-English questions over annual reports filed with the SEC, answered with every figure '
-        'cited to the filing it comes from.</p>'
-        '<a class="hero-btn" href="?start=1" target="_self">Get started →</a>'
-        f'<div class="hero-meta">{html.escape(coverage)}</div></div>',
-        unsafe_allow_html=True,
-    )
+def hero_html(catalog: dict) -> str:
+    companies = " · ".join(c["name"] for c in catalog["companies"])
+    years = sorted({y for c in catalog["companies"] for y in c["years"]})
+    coverage = f"Covering {companies}" + (f" · fiscal years {years[0]}–{years[-1]}" if years else "")
+    coverage += f" · up to {catalog['max_companies_per_question']} companies per question"
+    badge = '<div class="hero-badge"><span class="dot"></span>AI-POWERED RESEARCH</div>'
+    if started:
+        return f'<div class="hero compact">{badge}<h1>Ask the <span>10-K</span></h1><p>{html.escape(coverage)}</p></div>'
+    return (f'<div class="hero">{badge}<h1>Ask the <span>10-K</span>.<br>Get answers you can verify.</h1>'
+            '<p>Plain-English questions over annual reports filed with the SEC, answered with every figure '
+            'cited to the filing it comes from.</p>'
+            '<a class="hero-btn" href="?start=1" target="_self">Get started →</a>'
+            f'<div class="hero-meta">{html.escape(coverage)}</div></div>')
+
+
+# The hero is drawn right away with the fallback company list; the live list from /catalog fills it
+# in at the end of the page, so a sleeping backend never holds up the page
+hero_slot = st.empty()
+hero_slot.markdown(hero_html(FALLBACK_CATALOG), unsafe_allow_html=True)
 st.iframe(HERO_ANIMATION, height=1)
 
 if not started:
@@ -812,3 +811,7 @@ st.markdown(
     f'<a href="{LINKEDIN_URL}" target="_blank">LinkedIn</a></div></div>',
     unsafe_allow_html=True,
 )
+
+available = load_catalog()
+if available != FALLBACK_CATALOG:
+    hero_slot.markdown(hero_html(available), unsafe_allow_html=True)
