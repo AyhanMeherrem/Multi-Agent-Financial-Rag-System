@@ -1,7 +1,4 @@
 
-
-https://github.com/user-attachments/assets/899a36dd-8c82-4c30-a877-ed6ebb4df32d
-
 # Financial RAG on SEC 10-K Filings
 
 [![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
