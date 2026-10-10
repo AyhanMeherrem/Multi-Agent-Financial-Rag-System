@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/899a36dd-8c82-4c30-a877-ed6ebb4df32d
+
 # Financial RAG on SEC 10-K Filings
 
 [![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
@@ -16,7 +20,10 @@ Ask plain-English questions about the annual reports of **Apple, Microsoft, NVID
 
 ## 🎬 Demo
 
-https://github.com/user-attachments/assets/74c4eb71-4ae1-4500-bb0f-44a9a79ffbaf
+
+https://github.com/user-attachments/assets/101a7e50-8601-40d2-bcb2-f73496490db2
+
+
 
 ### 3D vector space
 
